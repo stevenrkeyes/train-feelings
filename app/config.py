@@ -1,0 +1,24 @@
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data")))
+
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "local")  # local | remote
+COLLECTOR_ENABLED = os.environ.get("COLLECTOR_ENABLED", "true").lower() == "true"
+REMOTE_API_URL = os.environ.get("REMOTE_API_URL", "").rstrip("/")
+INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
+
+DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", str(DATA_DIR / "trains.db")))
+POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "30"))
+ARRIVAL_WINDOW_MINUTES = int(os.environ.get("ARRIVAL_WINDOW_MINUTES", "10"))
+DATA_RETENTION_HOURS = int(os.environ.get("DATA_RETENTION_HOURS", "24"))
+
+SESSION_COOKIE_NAME = "tf_session"
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-change-me-in-production")
+SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
+
+FEED_STALE_THRESHOLD_SECONDS = int(os.environ.get("FEED_STALE_THRESHOLD_SECONDS", "90"))
+EVENT_FUTURE_MARGIN_SECONDS = int(os.environ.get("EVENT_FUTURE_MARGIN_SECONDS", "30"))
+HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "30"))

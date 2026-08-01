@@ -1,0 +1,244 @@
+:root {
+  --bg: #0f1419;
+  --surface: #1a2332;
+  --border: #2d3a4f;
+  --text: #e8edf4;
+  --muted: #8b9cb3;
+  --accent: #4da3ff;
+  --route-bg: #243044;
+  --predicted: #7eb6ff;
+  --scheduled: #c9b8ff;
+  --actual: #7ddea8;
+  --meta: #8b9cb3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.header {
+  padding: 1.25rem 1rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.meta {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.78rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+
+.legend-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+}
+
+.legend-dot--predicted { background: var(--predicted); }
+.legend-dot--scheduled { background: var(--scheduled); }
+.legend-dot--actual { background: var(--actual); }
+.legend-dot--meta { background: var(--meta); }
+
+.trains {
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.train-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.train-card__identity {
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.train-card__top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.route-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: var(--route-bg);
+  font-weight: 700;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.train-card__ids {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.id-row {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.id-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.id-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.train-history__summary {
+  padding: 0.8rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--accent);
+  list-style: none;
+}
+
+.train-history__summary::-webkit-details-marker {
+  display: none;
+}
+
+.train-history__summary::before {
+  content: "▸ ";
+}
+
+.train-history[open] > .train-history__summary::before {
+  content: "▾ ";
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.history-item {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item--empty {
+  color: var(--muted);
+}
+
+.history-item__stop .stop-name {
+  font-weight: 500;
+}
+
+.history-item__stop .stop-id {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.history-item__fields {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.1rem;
+  font-size: 0.82rem;
+}
+
+.field__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.field--predicted .field__label { color: var(--predicted); }
+.field--scheduled .field__label { color: var(--scheduled); }
+.field--actual .field__label { color: var(--actual); }
+.field--meta .field__label { color: var(--meta); }
+
+.field__value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.error {
+  color: #ff8a8a;
+}
+
+@media (min-width: 640px) {
+  .header {
+    padding: 1.5rem 1.5rem 1rem;
+  }
+
+  .trains {
+    padding: 1.5rem;
+  }
+
+  .field {
+    grid-template-columns: 10rem 1fr;
+    align-items: baseline;
+  }
+}

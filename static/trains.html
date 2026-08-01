@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Train Feelings</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>Train Feelings</h1>
+    <p class="subtitle">MTA subway trains seen in the last <span id="window-minutes">10</span> minutes</p>
+    <p class="meta" id="status">Loading…</p>
+    <div class="legend" aria-label="Data type legend">
+      <span class="legend-item"><span class="legend-dot legend-dot--predicted"></span> Predicted (realtime estimate)</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--scheduled"></span> Scheduled (plan)</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--actual"></span> Actual (reported position/track)</span>
+      <span class="legend-item"><span class="legend-dot legend-dot--meta"></span> Recorded at (when we polled)</span>
+    </div>
+  </header>
+
+  <main id="trains" class="trains" aria-live="polite"></main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
