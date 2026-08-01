@@ -37,13 +37,31 @@ def _iso_or_none(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _delays_from_stop_update(stop_update) -> tuple[int | None, int | None]:
+    raw = stop_update._stop_time_update
+    arrival_delay = None
+    departure_delay = None
+    if raw.HasField("arrival") and raw.arrival.HasField("delay"):
+        arrival_delay = int(raw.arrival.delay)
+    if raw.HasField("departure") and raw.departure.HasField("delay"):
+        departure_delay = int(raw.departure.delay)
+    return arrival_delay, departure_delay
+
+
 def _extract_rows(feed_id: str, feed: NYCTFeed) -> list[dict]:
     rows: list[dict] = []
     for trip in feed.trips:
         train_id = _train_key(trip)
         location_stop_id = trip.location
         location_status = trip.location_status
-        for stop_update in trip.stop_time_updates:
+        stop_updates = trip.stop_time_updates
+        trip_arrival_delay = None
+        trip_departure_delay = None
+        if stop_updates:
+            trip_arrival_delay, trip_departure_delay = _delays_from_stop_update(stop_updates[0])
+
+        for stop_update in stop_updates:
+            arrival_delay, departure_delay = _delays_from_stop_update(stop_update)
             rows.append(
                 {
                     "train_id": train_id,
@@ -53,6 +71,10 @@ def _extract_rows(feed_id: str, feed: NYCTFeed) -> list[dict]:
                     "stop_name": stop_update.stop_name,
                     "arrival_time": _iso_or_none(stop_update.arrival),
                     "departure_time": _iso_or_none(stop_update.departure),
+                    "arrival_delay": arrival_delay,
+                    "departure_delay": departure_delay,
+                    "trip_arrival_delay": trip_arrival_delay,
+                    "trip_departure_delay": trip_departure_delay,
                     "location_stop_id": location_stop_id,
                     "location_status": location_status,
                     "scheduled_track": stop_update.scheduled_track,

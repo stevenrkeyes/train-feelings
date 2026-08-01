@@ -8,8 +8,16 @@
 </head>
 <body>
   <header class="header">
-    <h1>Train Feelings</h1>
-    <p class="subtitle">MTA subway trains seen in the last <span id="window-minutes">10</span> minutes</p>
+    <div class="header__row">
+      <div>
+        <h1>Train Feelings</h1>
+        <p class="subtitle">MTA subway trains seen in the last <span id="window-minutes">10</span> minutes</p>
+      </div>
+      <nav class="nav">
+        <a class="nav__link" href="/">Map</a>
+        <a class="nav__link nav__link--active" href="/trains">Trains</a>
+      </nav>
+    </div>
     <p class="meta" id="status">Loading…</p>
     <div class="legend" aria-label="Data type legend">
       <span class="legend-item"><span class="legend-dot legend-dot--predicted"></span> Predicted (realtime estimate)</span>

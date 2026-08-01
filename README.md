@@ -19,7 +19,7 @@ cp .env.example .env
 ./run-dev.sh
 ```
 
-Open http://localhost:8000/trains
+Open http://localhost:8000/ for the map, or http://localhost:8000/trains for the train list.
 
 The first page load sets an HttpOnly session cookie. API routes reject requests without it.
 
@@ -58,8 +58,9 @@ Point `trains.oscilloscopi.st` (or your subdomain) at the Fly app via DNS.
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Redirects to `/trains` |
-| `GET /trains` | Web UI (sets session cookie) |
+| `GET /` | Map (sets session cookie) |
+| `GET /trains` | Train list UI |
+| `GET /api/map/trains` | Current train locations for map |
 | `GET /api/trains` | Trains + arrivals from last 10 minutes |
 | `GET /api/feeds` | Feed health status |
 | `GET /api/health` | Liveness check (no session) |
@@ -67,3 +68,15 @@ Point `trains.oscilloscopi.st` (or your subdomain) at the Fly app via DNS.
 ## Mobile testing
 
 Use browser DevTools device mode (`Ctrl+Shift+M`) or open `http://<your-lan-ip>:8000/trains` on your phone.
+
+## Subway line overlay
+
+The map draws route shapes from MTA GTFS `shapes.txt` with official `route_color` values from `routes.txt`.
+
+To regenerate after updating GTFS:
+
+```bash
+curl -fsSL -o data/gtfs/google_transit.zip \
+  http://web.mta.info/developers/data/nyct/subway/google_transit.zip
+python scripts/build_shapes_geojson.py
+```

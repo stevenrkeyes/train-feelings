@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.collector import collector_loop
@@ -20,6 +20,7 @@ from app.config import (
     STATIC_DIR,
 )
 from app import db
+from app.stops import enrich_train_locations
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +93,15 @@ async def _fetch_remote(path: str) -> dict | list:
 
 
 TRAINS_PAGE_PATH = "/trains"
+MAP_PAGE_PATH = "/"
+SESSION_PAGES = {MAP_PAGE_PATH, TRAINS_PAGE_PATH}
 
 
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
     response = await call_next(request)
 
-    if request.url.path == TRAINS_PAGE_PATH and request.method == "GET":
+    if request.url.path in SESSION_PAGES and request.method == "GET":
         token = request.cookies.get(SESSION_COOKIE_NAME)
         if not await db.validate_session(token):
             new_token = await db.create_session()
@@ -137,6 +140,17 @@ async def list_trains(request: Request):
     }
 
 
+@app.get("/api/map/trains")
+async def map_trains(request: Request):
+    await _require_session(request)
+
+    if DATA_SOURCE == "remote":
+        return await _fetch_remote("/api/map/trains")
+
+    locations = await db.get_train_locations()
+    return {"trains": enrich_train_locations(locations)}
+
+
 @app.get("/api/feeds")
 async def feed_status(request: Request):
     await _require_session(request)
@@ -153,8 +167,11 @@ if static_path.exists():
 
 
 @app.get("/")
-async def root():
-    return RedirectResponse(url=TRAINS_PAGE_PATH, status_code=302)
+async def map_page():
+    page_path = STATIC_DIR / "index.html"
+    if not page_path.exists():
+        return JSONResponse({"message": "Map not found"}, status_code=404)
+    return FileResponse(page_path)
 
 
 @app.get(TRAINS_PAGE_PATH)

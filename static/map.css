@@ -1,0 +1,105 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f6f8;
+  color: #1a2332;
+}
+
+.header--map {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #d8dee8;
+  background: #fff;
+}
+
+.header__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.nav {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.nav__link {
+  color: #4a5d78;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.nav__link--active {
+  color: #1a6fd1;
+}
+
+.meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  color: #6b7c93;
+}
+
+.meta.error {
+  color: #c0392b;
+}
+
+.map {
+  width: 100%;
+  min-height: 0;
+}
+
+.train-marker {
+  background: transparent;
+  border: none;
+}
+
+.train-marker__emoji {
+  display: block;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+
+.train-popup {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.train-popup__link {
+  color: #1a6fd1;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.train-popup__link:hover {
+  text-decoration: underline;
+}
+
+.train-popup__late {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  color: #b45309;
+  font-weight: 600;
+}
+
+@media (min-width: 640px) {
+  .header--map {
+    padding: 0.9rem 1.25rem;
+  }
+}

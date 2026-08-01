@@ -6,6 +6,10 @@ const REFRESH_MS = 15000;
 const HISTORY_LIMIT = 30;
 
 const expandedTrains = new Set();
+const focusTrainId = new URLSearchParams(window.location.search).get("train_id");
+if (focusTrainId) {
+  expandedTrains.add(focusTrainId);
+}
 
 function formatTime(iso) {
   if (!iso) return "—";
@@ -74,7 +78,7 @@ function renderTrainCard(train) {
     : '<li class="history-item history-item--empty">No stop updates recorded yet.</li>';
 
   return `
-    <article class="train-card">
+    <article class="train-card" data-train-id="${escapeHtml(train.train_id)}">
       <div class="train-card__identity">
         <div class="train-card__top">
           <span class="route-badge" title="Route">${escapeHtml(train.route_id || "?")}</span>
@@ -110,6 +114,22 @@ function bindDetailsHandlers() {
   });
 }
 
+function focusTrainCard(trainId) {
+  if (!trainId) return;
+
+  const card = trainsEl.querySelector(`.train-card[data-train-id="${CSS.escape(trainId)}"]`);
+  if (!card) return;
+
+  const details = card.querySelector("details.train-history");
+  if (details) {
+    details.open = true;
+    expandedTrains.add(trainId);
+  }
+
+  card.classList.add("train-card--focused");
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function renderTrains(data) {
   windowMinutesEl.textContent = data.window_minutes;
   const trains = data.trains || [];
@@ -121,6 +141,9 @@ function renderTrains(data) {
 
   trainsEl.innerHTML = trains.map(renderTrainCard).join("");
   bindDetailsHandlers();
+  if (focusTrainId) {
+    focusTrainCard(focusTrainId);
+  }
 }
 
 async function loadTrains() {

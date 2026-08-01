@@ -80,6 +80,10 @@ async def init_db(db_path: Path | None = None) -> None:
                 location_status TEXT,
                 scheduled_track TEXT,
                 actual_track TEXT,
+                arrival_delay INTEGER,
+                departure_delay INTEGER,
+                trip_arrival_delay INTEGER,
+                trip_departure_delay INTEGER,
                 feed_id TEXT NOT NULL,
                 feed_timestamp TEXT NOT NULL,
                 collected_at TEXT NOT NULL
@@ -117,6 +121,10 @@ async def _migrate_observations_table(db: aiosqlite.Connection) -> None:
         "location_status": "TEXT",
         "scheduled_track": "TEXT",
         "actual_track": "TEXT",
+        "arrival_delay": "INTEGER",
+        "departure_delay": "INTEGER",
+        "trip_arrival_delay": "INTEGER",
+        "trip_departure_delay": "INTEGER",
     }
     for name, col_type in additions.items():
         if name not in columns:
@@ -183,6 +191,10 @@ async def record_observations(
             row.get("location_status"),
             row.get("scheduled_track"),
             row.get("actual_track"),
+            row.get("arrival_delay"),
+            row.get("departure_delay"),
+            row.get("trip_arrival_delay"),
+            row.get("trip_departure_delay"),
             feed_id,
             feed_ts,
             collected_at,
@@ -196,8 +208,10 @@ async def record_observations(
             INSERT INTO observations (
                 train_id, trip_id, route_id, stop_id, stop_name,
                 arrival_time, departure_time, location_stop_id, location_status,
-                scheduled_track, actual_track, feed_id, feed_timestamp, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                scheduled_track, actual_track, arrival_delay, departure_delay,
+                trip_arrival_delay, trip_departure_delay,
+                feed_id, feed_timestamp, collected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -280,6 +294,44 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
                 result.append({**train, "arrivals": arrivals})
 
     return result
+
+
+async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
+    window = window_minutes or ARRIVAL_WINDOW_MINUTES
+    cutoff = _iso(_utc_now() - timedelta(minutes=window))
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                train_id, route_id, trip_id, location_stop_id, location_status,
+                trip_arrival_delay, trip_departure_delay, collected_at
+            FROM (
+                SELECT
+                    train_id,
+                    route_id,
+                    trip_id,
+                    location_stop_id,
+                    location_status,
+                    trip_arrival_delay,
+                    trip_departure_delay,
+                    collected_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY train_id
+                        ORDER BY collected_at DESC
+                    ) AS rn
+                FROM observations
+                WHERE collected_at >= ?
+                  AND location_stop_id IS NOT NULL
+                  AND location_stop_id != ''
+            )
+            WHERE rn = 1
+            ORDER BY train_id
+            """,
+            (cutoff,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
 
 async def get_feed_health() -> list[dict]:
