@@ -55,23 +55,29 @@ function zoomIconScale() {
 }
 
 function trainEmoji(train) {
-  if (!train.is_late) {
-    return "🚆";
+  if (train.is_late) {
+    if (train.train_in_front_also_late) {
+      return "😡";
+    }
+    return "😞";
   }
-  if (train.train_in_front_also_late) {
-    return "😡";
+  if (train.is_early) {
+    return "😏";
   }
-  return "😞";
+  return "🚆";
 }
 
 function trainIconLabel(train) {
-  if (!train.is_late) {
-    return "train";
+  if (train.is_late) {
+    if (train.train_in_front_also_late) {
+      return "delayed by train in front";
+    }
+    return "late train";
   }
-  if (train.train_in_front_also_late) {
-    return "delayed by train in front";
+  if (train.is_early) {
+    return "early train";
   }
-  return "late train";
+  return "train";
 }
 
 function trainIcon(train) {
@@ -223,6 +229,7 @@ function stationStatusLine(train) {
 function trainPopupHtml(train) {
   const delays = [train.trip_arrival_delay, train.trip_departure_delay].filter((value) => value != null);
   const maxDelay = delays.length ? Math.max(...delays) : null;
+  const minDelay = delays.length ? Math.min(...delays) : null;
 
   const stationLine = `<div class="train-popup__station">${escapeHtml(stationStatusLine(train))}</div>`;
 
@@ -244,12 +251,17 @@ function trainPopupHtml(train) {
       ? `<div class="train-popup__late">${maxDelay}s behind schedule</div>`
       : "";
 
+  const earlyLine =
+    !train.is_late && train.is_early && minDelay != null
+      ? `<div class="train-popup__early">${Math.abs(minDelay)}s ahead of schedule</div>`
+      : "";
+
   const trainInFrontLine =
     train.train_in_front_also_late && train.train_in_front_id
       ? `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`
       : "";
 
-  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${stationLine}${departureLine}${modeLine}${lateLine}${trainInFrontLine}</div>`;
+  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${stationLine}${departureLine}${modeLine}${lateLine}${earlyLine}${trainInFrontLine}</div>`;
 }
 
 async function loadTrains() {

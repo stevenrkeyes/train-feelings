@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.following_late import enrich_train_in_front_also_late
-from app.schedule import is_train_late
+from app.schedule import is_train_early, is_train_late
 from app.stops import lookup_stop
 
 
@@ -35,6 +35,15 @@ def _progress_between(
     return max(0.0, min(1.0, elapsed / duration))
 
 
+def _schedule_flags(train: dict) -> dict[str, bool]:
+    arrival_delay = train.get("trip_arrival_delay")
+    departure_delay = train.get("trip_departure_delay")
+    return {
+        "is_late": is_train_late(arrival_delay, departure_delay),
+        "is_early": is_train_early(arrival_delay, departure_delay),
+    }
+
+
 def interpolate_position(
     train: dict,
     *,
@@ -63,7 +72,7 @@ def interpolate_position(
             "arrive_at": None,
             "stop_name": current_stop["stop_name"],
             "position_mode": "at_stop",
-            "is_late": is_train_late(train.get("trip_arrival_delay"), train.get("trip_departure_delay")),
+            **_schedule_flags(train),
         }
 
     if status == "IN_TRANSIT_TO" and departed_from_stop_id:
@@ -82,7 +91,7 @@ def interpolate_position(
                 "arrive_at": None,
                 "stop_name": current_stop["stop_name"],
                 "position_mode": "at_stop",
-                "is_late": is_train_late(train.get("trip_arrival_delay"), train.get("trip_departure_delay")),
+                **_schedule_flags(train),
             }
 
         depart_at = train.get("last_position_update") or train.get("collected_at")
@@ -108,7 +117,7 @@ def interpolate_position(
             "departed_from_stop_name": from_stop["stop_name"],
             "position_mode": "interpolated",
             "interpolation_progress": round(progress, 3),
-            "is_late": is_train_late(train.get("trip_arrival_delay"), train.get("trip_departure_delay")),
+            **_schedule_flags(train),
         }
 
     lat, lon = current_stop["lat"], current_stop["lon"]
@@ -124,7 +133,7 @@ def interpolate_position(
         "arrive_at": None,
         "stop_name": current_stop["stop_name"],
         "position_mode": "at_stop",
-        "is_late": is_train_late(train.get("trip_arrival_delay"), train.get("trip_departure_delay")),
+        **_schedule_flags(train),
     }
 
 
