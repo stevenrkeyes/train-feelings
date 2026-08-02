@@ -441,7 +441,7 @@ function scheduleStatusLine(train, maxDelay, minDelay) {
   }
   if (train.is_late) {
     if (train.train_in_front_also_late && train.train_in_front_id) {
-      return `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`;
+      return `<div class="train-popup__train-in-front">Delayed by preceding train (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`;
     }
     if (maxDelay != null) {
       return `<div class="train-popup__late">${maxDelay}s behind schedule</div>`;
@@ -452,7 +452,7 @@ function scheduleStatusLine(train, maxDelay, minDelay) {
     return `<div class="train-popup__early">${Math.abs(minDelay)}s ahead of schedule</div>`;
   }
   if (train.consistent_day && train.day_on_time_rate != null) {
-    return `<div class="train-popup__punctual">On time or early for ${Math.round(train.day_on_time_rate * 100)}% of today (${formatTrackingMinutes(train.day_tracking_minutes)} tracked)</div>`;
+    return `<div class="train-popup__punctual">Punctual all day</div>`;
   }
   return "";
 }
