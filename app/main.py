@@ -149,7 +149,7 @@ async def map_trains(request: Request):
         return await _fetch_remote("/api/map/trains")
 
     started = time.monotonic()
-    locations = await db.get_train_locations()
+    locations = await db.get_cached_train_locations()
     t_locations = time.monotonic()
 
     departed_from = await db.get_departed_from_stops(locations)
@@ -159,10 +159,8 @@ async def map_trains(request: Request):
     day_punctuality = await db.get_train_day_punctuality(train_ids)
     t_punctuality = time.monotonic()
 
-    consist_ids = await db.get_feelings_consist_ids(train_ids)
-    old_friends = await db.get_active_old_friends(train_ids)
-    dwell_since = await db.get_station_dwell_since(locations)
-    t_queries = time.monotonic()
+    consist_ids, old_friends, dwell_since = await db.get_map_enrichment(train_ids, locations)
+    t_enrichment = time.monotonic()
 
     trains = enrich_map_trains(
         locations,
@@ -176,14 +174,14 @@ async def map_trains(request: Request):
     if elapsed > 5:
         logger.warning(
             "map/trains slow (%.1fs, %d trains): locations=%.1fs departed=%.1fs "
-            "punctuality=%.1fs other=%.1fs enrich=%.1fs",
+            "punctuality=%.1fs enrichment=%.1fs enrich=%.1fs",
             elapsed,
             len(trains),
             t_locations - started,
             t_departed - t_locations,
             t_punctuality - t_departed,
-            t_queries - t_punctuality,
-            time.monotonic() - t_queries,
+            t_enrichment - t_punctuality,
+            time.monotonic() - t_enrichment,
         )
 
     return {"trains": trains}

@@ -46,6 +46,16 @@ _EMPTY_PUNCTUALITY = {
     "day_tracking_minutes": 0.0,
 }
 
+_locations_cache: list[dict] | None = None
+_locations_cache_at: float | None = None
+_locations_refresh_lock = asyncio.Lock()
+LOCATIONS_CACHE_SECONDS = 15
+
+_map_enrichment_cache: dict | None = None
+_map_enrichment_cache_at: float | None = None
+_map_enrichment_refresh_lock = asyncio.Lock()
+MAP_ENRICHMENT_CACHE_SECONDS = 30
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -316,7 +326,7 @@ async def prune_expired_sessions() -> None:
         await db.commit()
 
 
-async def record_observations(
+async def record_observation_rows(
     feed_id: str,
     feed_timestamp: datetime,
     rows: list[dict],
@@ -356,26 +366,39 @@ async def record_observations(
         for row in rows
     ]
 
-    async with _db_lock:
-        async with _db_connect() as db:
-            await db.executemany(
-                """
-                INSERT INTO observations (
-                    train_id, trip_id, route_id, stop_id, stop_name,
-                    arrival_time, departure_time, location_stop_id, location_status,
-                    scheduled_track, actual_track, arrival_delay, departure_delay,
-                    trip_arrival_delay, trip_departure_delay, last_position_update,
-                    next_stop_arrival_time, next_stop_departure_time,
-                    shape_id, direction, current_stop_sequence,
-                    feed_id, feed_timestamp, collected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                values,
-            )
-            await db.commit()
+    async with _db_write() as db:
+        await db.executemany(
+            """
+            INSERT INTO observations (
+                train_id, trip_id, route_id, stop_id, stop_name,
+                arrival_time, departure_time, location_stop_id, location_status,
+                scheduled_track, actual_track, arrival_delay, departure_delay,
+                trip_arrival_delay, trip_departure_delay, last_position_update,
+                next_stop_arrival_time, next_stop_departure_time,
+                shape_id, direction, current_stop_sequence,
+                feed_id, feed_timestamp, collected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        await db.commit()
 
+
+async def finalize_poll_enrichment(rows: list[dict]) -> None:
+    if not rows:
+        return
+    collected_at = _iso(_utc_now())
     await update_consists_from_poll(rows, collected_at)
     await update_colocations_from_poll(rows, collected_at)
+
+
+async def record_observations(
+    feed_id: str,
+    feed_timestamp: datetime,
+    rows: list[dict],
+) -> None:
+    await record_observation_rows(feed_id, feed_timestamp, rows)
+    await finalize_poll_enrichment(rows)
 
 
 def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
@@ -1018,6 +1041,68 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
             (cutoff,),
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_cached_train_locations() -> list[dict]:
+    global _locations_cache, _locations_cache_at
+
+    now = time.monotonic()
+    if (
+        _locations_cache is not None
+        and _locations_cache_at is not None
+        and now - _locations_cache_at < LOCATIONS_CACHE_SECONDS
+    ):
+        return _locations_cache
+
+    async with _locations_refresh_lock:
+        now = time.monotonic()
+        if (
+            _locations_cache is not None
+            and _locations_cache_at is not None
+            and now - _locations_cache_at < LOCATIONS_CACHE_SECONDS
+        ):
+            return _locations_cache
+
+        _locations_cache = await get_train_locations()
+        _locations_cache_at = now
+        return _locations_cache
+
+
+async def get_map_enrichment(
+    train_ids: list[str],
+    locations: list[dict],
+) -> tuple[dict[str, int], dict[str, dict[str, str]], dict[str, str]]:
+    global _map_enrichment_cache, _map_enrichment_cache_at
+
+    now = time.monotonic()
+    if (
+        _map_enrichment_cache is not None
+        and _map_enrichment_cache_at is not None
+        and now - _map_enrichment_cache_at < MAP_ENRICHMENT_CACHE_SECONDS
+    ):
+        cached = _map_enrichment_cache
+        return cached["consist_ids"], cached["old_friends"], cached["dwell_since"]
+
+    async with _map_enrichment_refresh_lock:
+        now = time.monotonic()
+        if (
+            _map_enrichment_cache is not None
+            and _map_enrichment_cache_at is not None
+            and now - _map_enrichment_cache_at < MAP_ENRICHMENT_CACHE_SECONDS
+        ):
+            cached = _map_enrichment_cache
+            return cached["consist_ids"], cached["old_friends"], cached["dwell_since"]
+
+        consist_ids = await get_feelings_consist_ids(train_ids)
+        old_friends = await get_active_old_friends(train_ids)
+        dwell_since = await get_station_dwell_since(locations)
+        _map_enrichment_cache = {
+            "consist_ids": consist_ids,
+            "old_friends": old_friends,
+            "dwell_since": dwell_since,
+        }
+        _map_enrichment_cache_at = now
+        return consist_ids, old_friends, dwell_since
 
 
 async def _ensure_obs_train_day_index(db: aiosqlite.Connection) -> None:

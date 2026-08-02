@@ -9,7 +9,13 @@ from zoneinfo import ZoneInfo
 from nyct_gtfs import NYCTFeed
 
 from app.config import FEED_STALE_THRESHOLD_SECONDS, POLL_INTERVAL_SECONDS
-from app.db import prune_expired_sessions, prune_old_data, record_observations, update_feed_health
+from app.db import (
+    finalize_poll_enrichment,
+    prune_expired_sessions,
+    prune_old_data,
+    record_observation_rows,
+    update_feed_health,
+)
 from app.feeds import FEEDS
 
 logger = logging.getLogger(__name__)
@@ -130,7 +136,7 @@ async def _persist_feed_poll(
     rows: list[dict],
     feed_timestamp: datetime | None,
     error: str | None,
-) -> None:
+) -> list[dict]:
     if feed_timestamp or status == "healthy":
         await update_feed_health(
             feed_id,
@@ -142,16 +148,11 @@ async def _persist_feed_poll(
         await update_feed_health(feed_id, feed_timestamp=None, status="unhealthy", error=error)
 
     if rows and feed_timestamp and status == "healthy":
-        await record_observations(feed_id, feed_timestamp, rows)
+        await record_observation_rows(feed_id, feed_timestamp, rows)
         logger.info("Recorded %d observations from feed %s", len(rows), feed_id)
+        return rows
 
-
-async def poll_feed(feed_id: str, url: str) -> None:
-    loop = asyncio.get_running_loop()
-    status, rows, feed_timestamp, error = await loop.run_in_executor(
-        None, _poll_feed_sync, feed_id, url
-    )
-    await _persist_feed_poll(feed_id, status, rows, feed_timestamp, error)
+    return []
 
 
 async def poll_all_feeds() -> None:
@@ -163,8 +164,14 @@ async def poll_all_feeds() -> None:
             for feed_id, url in feed_items
         )
     )
+
+    rows_for_enrichment: list[dict] = []
     for (feed_id, _), (status, rows, feed_timestamp, error) in zip(feed_items, results):
-        await _persist_feed_poll(feed_id, status, rows, feed_timestamp, error)
+        persisted_rows = await _persist_feed_poll(feed_id, status, rows, feed_timestamp, error)
+        rows_for_enrichment.extend(persisted_rows)
+
+    if rows_for_enrichment:
+        await finalize_poll_enrichment(rows_for_enrichment)
 
 
 async def collector_loop(stop_event: asyncio.Event) -> None:

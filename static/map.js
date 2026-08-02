@@ -459,7 +459,7 @@ function scheduleStatusLine(train, maxDelay, minDelay) {
 
 async function loadTrains() {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  const timeoutId = setTimeout(() => controller.abort(), 90000);
 
   try {
     const response = await fetch("/api/map/trains", { signal: controller.signal });
