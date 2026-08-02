@@ -64,6 +64,9 @@ function trainEmoji(train) {
   if (train.is_early) {
     return "😏";
   }
+  if (train.consistent_day) {
+    return "🤓";
+  }
   return "🚆";
 }
 
@@ -76,6 +79,9 @@ function trainIconLabel(train) {
   }
   if (train.is_early) {
     return "early train";
+  }
+  if (train.consistent_day) {
+    return "consistently on-time train";
   }
   return "train";
 }
@@ -210,6 +216,21 @@ function formatTime(iso) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function formatTrackingMinutes(minutes) {
+  if (minutes == null || Number.isNaN(minutes)) {
+    return "0 min";
+  }
+  if (minutes < 60) {
+    return `${Math.round(minutes)} min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainder = Math.round(minutes % 60);
+  if (remainder === 0) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${remainder}m`;
+}
+
 function stationStatusLine(train) {
   const name = train.stop_name || train.location_stop_id || "Unknown";
   const status = train.location_status;
@@ -263,7 +284,12 @@ function trainPopupHtml(train) {
       ? `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`
       : "";
 
-  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${lateLine}${earlyLine}${trainInFrontLine}</div>`;
+  const punctualLine =
+    train.consistent_day && train.day_on_time_rate != null
+      ? `<div class="train-popup__punctual">On time or early for ${Math.round(train.day_on_time_rate * 100)}% of today (${formatTrackingMinutes(train.day_tracking_minutes)} tracked)</div>`
+      : "";
+
+  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${lateLine}${earlyLine}${punctualLine}${trainInFrontLine}</div>`;
 }
 
 async function loadTrains() {

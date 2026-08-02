@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.following_late import enrich_train_in_front_also_late
+from app.punctuality import apply_day_punctuality
 from app.schedule import is_train_early, is_train_late
 from app.stops import lookup_stop
 from app.train_id import format_train_display_name
@@ -138,7 +139,11 @@ def interpolate_position(
     }
 
 
-def enrich_map_trains(trains: list[dict], departed_from: dict[str, str]) -> list[dict]:
+def enrich_map_trains(
+    trains: list[dict],
+    departed_from: dict[str, str],
+    day_punctuality: dict[str, dict] | None = None,
+) -> list[dict]:
     enriched: list[dict] = []
     for train in trains:
         position = interpolate_position(
@@ -147,7 +152,8 @@ def enrich_map_trains(trains: list[dict], departed_from: dict[str, str]) -> list
         )
         if position is not None:
             enriched.append(position)
-    return [
+    labeled = [
         {**train, "train_label": format_train_display_name(train.get("train_id"))}
         for train in enrich_train_in_front_also_late(enriched)
     ]
+    return apply_day_punctuality(labeled, day_punctuality or {})

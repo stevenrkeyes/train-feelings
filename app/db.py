@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from app.config import (
     HISTORY_LIMIT,
     SESSION_MAX_AGE_SECONDS,
 )
+from app.punctuality import summarize_day_punctuality, today_bounds_utc
 
 
 def _utc_now() -> datetime:
@@ -395,6 +397,44 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
             (cutoff,),
         )
         return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
+    if not train_ids:
+        return {}
+
+    day_start, day_end = today_bounds_utc()
+    placeholders = ",".join("?" * len(train_ids))
+    params = [*train_ids, _iso(day_start), _iso(day_end)]
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT
+                train_id,
+                collected_at,
+                MAX(trip_arrival_delay) AS trip_arrival_delay,
+                MAX(trip_departure_delay) AS trip_departure_delay
+            FROM observations
+            WHERE train_id IN ({placeholders})
+              AND collected_at >= ?
+              AND collected_at < ?
+            GROUP BY train_id, collected_at
+            ORDER BY train_id, collected_at
+            """,
+            params,
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    samples_by_train: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        samples_by_train[row["train_id"]].append(row)
+
+    return {
+        train_id: summarize_day_punctuality(samples_by_train.get(train_id, []))
+        for train_id in train_ids
+    }
 
 
 async def get_feed_health() -> list[dict]:

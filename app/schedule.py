@@ -45,3 +45,13 @@ def is_train_early(
     if min_delay is None:
         return False
     return min_delay < -limit
+
+
+def is_on_time_or_early(
+    arrival_delay: int | None,
+    departure_delay: int | None,
+) -> bool:
+    """True when the train is not late (includes on-time and early)."""
+    if max_trip_delay(arrival_delay, departure_delay) is None:
+        return False
+    return not is_train_late(arrival_delay, departure_delay)

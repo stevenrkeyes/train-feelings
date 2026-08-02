@@ -149,7 +149,9 @@ async def map_trains(request: Request):
 
     locations = await db.get_train_locations()
     departed_from = await db.get_departed_from_stops(locations)
-    return {"trains": enrich_map_trains(locations, departed_from)}
+    train_ids = [train["train_id"] for train in locations]
+    day_punctuality = await db.get_train_day_punctuality(train_ids)
+    return {"trains": enrich_map_trains(locations, departed_from, day_punctuality)}
 
 
 @app.get("/api/feeds")
