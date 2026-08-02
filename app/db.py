@@ -76,11 +76,20 @@ def _filter_recent_events(rows: list[dict], limit: int | None = None) -> list[di
     return past_or_current[:cap]
 
 
+def _db_path(db_path: Path | None = None) -> Path:
+    return db_path or DATABASE_PATH
+
+
+def _db_connect(db_path: Path | None = None):
+    return aiosqlite.connect(_db_path(db_path), timeout=30.0)
+
+
 async def init_db(db_path: Path | None = None) -> None:
-    path = db_path or DATABASE_PATH
+    path = _db_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    async with aiosqlite.connect(path) as db:
+    async with _db_connect(path) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(
             """
             CREATE TABLE IF NOT EXISTS observations (
@@ -251,7 +260,7 @@ async def create_session() -> str:
     now = _utc_now()
     expires = now + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         await db.execute(
             "INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)",
             (token, _iso(now), _iso(expires)),
@@ -266,7 +275,7 @@ async def validate_session(token: str | None) -> bool:
         return False
 
     now = _iso(_utc_now())
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         cursor = await db.execute(
             "SELECT 1 FROM sessions WHERE token = ? AND expires_at > ?",
             (token, now),
@@ -277,7 +286,7 @@ async def validate_session(token: str | None) -> bool:
 
 async def prune_expired_sessions() -> None:
     now = _iso(_utc_now())
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         await db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         await db.commit()
 
@@ -322,7 +331,7 @@ async def record_observations(
         for row in rows
     ]
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         await db.executemany(
             """
             INSERT INTO observations (
@@ -357,7 +366,7 @@ async def update_consists_from_poll(rows: list[dict], collected_at: str) -> None
     if not snapshots:
         return
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         new_snapshots: list[dict] = []
         existing_snapshots: list[tuple[dict, aiosqlite.Row]] = []
@@ -575,7 +584,7 @@ async def update_colocations_from_poll(rows: list[dict], collected_at: str) -> N
     active_pairs = colocation_pairs(by_stop)
     active_keys = {(consist_a, consist_b, stop_id) for stop_id, consist_a, consist_b, _, _ in active_pairs}
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             "DELETE FROM feelings_consist_reunions WHERE reunion_until <= ?",
@@ -671,7 +680,7 @@ async def get_active_old_friends(train_ids: list[str]) -> dict[str, dict[str, st
         return {}
 
     now = _iso(_utc_now())
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
@@ -708,7 +717,7 @@ async def get_feelings_consist_ids(train_ids: list[str]) -> dict[str, int]:
         return {}
 
     placeholders = ",".join("?" * len(train_ids))
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             f"""
@@ -726,7 +735,7 @@ async def get_train_ids_for_consists(consist_ids: list[int]) -> dict[int, list[s
         return {}
 
     placeholders = ",".join("?" * len(consist_ids))
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             f"""
@@ -753,7 +762,7 @@ async def update_feed_health(
     now = _iso(_utc_now())
     feed_ts = _iso(feed_timestamp) if feed_timestamp else None
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         await db.execute(
             """
             INSERT INTO feed_health (
@@ -772,7 +781,7 @@ async def update_feed_health(
 
 async def prune_old_data() -> None:
     cutoff = _iso(_utc_now() - timedelta(hours=DATA_RETENTION_HOURS))
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         await db.execute("DELETE FROM observations WHERE collected_at < ?", (cutoff,))
         await db.commit()
 
@@ -781,7 +790,7 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
     window = window_minutes or ARRIVAL_WINDOW_MINUTES
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
@@ -832,7 +841,7 @@ async def get_departed_from_stops(
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
     departed: dict[str, str] = {}
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         for train in trains:
             if train.get("location_status") != "IN_TRANSIT_TO":
                 continue
@@ -871,46 +880,52 @@ async def get_station_dwell_since(
     if not trains:
         return {}
 
+    targets: dict[str, str] = {}
+    for train in trains:
+        status = train.get("location_status")
+        stop_id = train.get("location_stop_id")
+        if status in AT_STATION_STATUSES and stop_id:
+            targets[train["train_id"]] = stop_id
+
+    if not targets:
+        return {}
+
     window = window_minutes or max(SNORING_STATION_MINUTES + 5, 30)
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
-    dwell_since: dict[str, str] = {}
+    placeholders = ",".join("?" * len(targets))
+    params = [*targets.keys(), cutoff]
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    rows_by_train: dict[str, list] = defaultdict(list)
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
-        for train in trains:
-            status = train.get("location_status")
-            stop_id = train.get("location_stop_id")
-            if status not in AT_STATION_STATUSES or not stop_id:
+        cursor = await db.execute(
+            f"""
+            SELECT train_id, collected_at, location_stop_id, location_status
+            FROM observations
+            WHERE train_id IN ({placeholders})
+              AND collected_at >= ?
+              AND location_stop_id IS NOT NULL
+            ORDER BY train_id, collected_at DESC
+            """,
+            params,
+        )
+        for row in await cursor.fetchall():
+            rows_by_train[row["train_id"]].append(row)
+
+    dwell_since: dict[str, str] = {}
+    for train_id, stop_id in targets.items():
+        streak_start: str | None = None
+        for row in rows_by_train.get(train_id, []):
+            if (
+                row["location_stop_id"] == stop_id
+                and row["location_status"] in AT_STATION_STATUSES
+            ):
+                streak_start = row["collected_at"]
                 continue
+            break
 
-            train_id = train["train_id"]
-            cursor = await db.execute(
-                """
-                SELECT collected_at, location_stop_id, location_status
-                FROM observations
-                WHERE train_id = ?
-                  AND collected_at >= ?
-                  AND location_stop_id IS NOT NULL
-                ORDER BY collected_at DESC
-                """,
-                (train_id, cutoff),
-            )
-            rows = await cursor.fetchall()
-            if not rows:
-                continue
-
-            streak_start: str | None = None
-            for row in rows:
-                if (
-                    row["location_stop_id"] == stop_id
-                    and row["location_status"] in AT_STATION_STATUSES
-                ):
-                    streak_start = row["collected_at"]
-                    continue
-                break
-
-            if streak_start:
-                dwell_since[train_id] = streak_start
+        if streak_start:
+            dwell_since[train_id] = streak_start
 
     return dwell_since
 
@@ -919,7 +934,7 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
     window = window_minutes or ARRIVAL_WINDOW_MINUTES
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
@@ -976,7 +991,7 @@ async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
     placeholders = ",".join("?" * len(all_train_ids))
     params = [*all_train_ids, _iso(day_start), _iso(day_end)]
 
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             f"""
@@ -1019,7 +1034,7 @@ async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
 
 
 async def get_feed_health() -> list[dict]:
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    async with _db_connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT feed_id, last_poll_success_at, last_feed_timestamp, status, last_error FROM feed_health"
