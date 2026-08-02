@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Train Feelings — Map</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rye&display=swap" rel="stylesheet">
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -13,18 +16,15 @@
   <link rel="stylesheet" href="/static/map.css">
 </head>
 <body>
-  <header class="header header--map">
-    <div class="header__row">
-      <h1>Train Feelings</h1>
-      <nav class="nav">
-        <a class="nav__link nav__link--active" href="/">Map</a>
-        <a class="nav__link" href="/trains">Trains</a>
-      </nav>
-    </div>
-    <p class="meta" id="status">Loading map…</p>
-  </header>
-
-  <div id="map" class="map" role="application" aria-label="NYC subway train map"></div>
+  <div class="map-page">
+    <div id="map" class="map" role="application" aria-label="NYC subway train map"></div>
+    <h1 class="map-title">
+      <span class="map-title__emoji" aria-hidden="true">🚂</span>
+      <span class="map-title__text">Train Feelings</span>
+      <span class="map-title__emoji" aria-hidden="true">🚂</span>
+    </h1>
+    <p class="map-status" id="status" aria-live="polite"></p>
+  </div>
 
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"

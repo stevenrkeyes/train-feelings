@@ -1,6 +1,12 @@
 const statusEl = document.getElementById("status");
 const REFRESH_MS = 15000;
 
+function setStatus(message, isError = false) {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.classList.toggle("error", isError);
+}
+
 const NYC_CENTER = [40.72, -73.96];
 const NYC_ZOOM = 13;
 const BASE_ICON_SIZE = 42;
@@ -267,29 +273,29 @@ function trainPopupHtml(train) {
       ? `<div class="train-popup__mode">From ${escapeHtml(train.departed_from_stop_name)}</div>`
       : "";
 
-  const lateLine =
-    train.is_late && maxDelay != null
-      ? `<div class="train-popup__late">${maxDelay}s behind schedule</div>`
-      : "";
-
-  const earlyLine =
-    !train.is_late && train.is_early && minDelay != null
-      ? `<div class="train-popup__early">${Math.abs(minDelay)}s ahead of schedule</div>`
-      : "";
-
   const title = train.train_label || "Special Train";
+  const scheduleLine = scheduleStatusLine(train, maxDelay, minDelay);
 
-  const trainInFrontLine =
-    train.train_in_front_also_late && train.train_in_front_id
-      ? `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`
-      : "";
+  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${scheduleLine}</div>`;
+}
 
-  const punctualLine =
-    train.consistent_day && train.day_on_time_rate != null
-      ? `<div class="train-popup__punctual">On time or early for ${Math.round(train.day_on_time_rate * 100)}% of today (${formatTrackingMinutes(train.day_tracking_minutes)} tracked)</div>`
-      : "";
-
-  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${lateLine}${earlyLine}${punctualLine}${trainInFrontLine}</div>`;
+function scheduleStatusLine(train, maxDelay, minDelay) {
+  if (train.is_late) {
+    if (train.train_in_front_also_late && train.train_in_front_id) {
+      return `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`;
+    }
+    if (maxDelay != null) {
+      return `<div class="train-popup__late">${maxDelay}s behind schedule</div>`;
+    }
+    return "";
+  }
+  if (train.is_early && minDelay != null) {
+    return `<div class="train-popup__early">${Math.abs(minDelay)}s ahead of schedule</div>`;
+  }
+  if (train.consistent_day && train.day_on_time_rate != null) {
+    return `<div class="train-popup__punctual">On time or early for ${Math.round(train.day_on_time_rate * 100)}% of today (${formatTrackingMinutes(train.day_tracking_minutes)} tracked)</div>`;
+  }
+  return "";
 }
 
 async function loadTrains() {
@@ -300,17 +306,14 @@ async function loadTrains() {
     }
     const data = await response.json();
     syncMarkers(data.trains || []);
-    statusEl.textContent = `Updated ${new Date().toLocaleTimeString()} · ${lastTrainCount} train(s) on map`;
-    statusEl.classList.remove("error");
+    setStatus(`Updated ${new Date().toLocaleTimeString()} · ${lastTrainCount} train(s) on map`);
   } catch (error) {
-    statusEl.textContent = `Could not load trains: ${error.message}`;
-    statusEl.classList.add("error");
+    setStatus(`Could not load trains: ${error.message}`, true);
   }
 }
 
 loadShapes().catch((error) => {
-  statusEl.textContent = `Could not load subway lines: ${error.message}`;
-  statusEl.classList.add("error");
+  setStatus(`Could not load subway lines: ${error.message}`, true);
 });
 
 startAnimationLoop();
