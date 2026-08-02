@@ -84,6 +84,9 @@ async def init_db(db_path: Path | None = None) -> None:
                 departure_delay INTEGER,
                 trip_arrival_delay INTEGER,
                 trip_departure_delay INTEGER,
+                last_position_update TEXT,
+                next_stop_arrival_time TEXT,
+                next_stop_departure_time TEXT,
                 feed_id TEXT NOT NULL,
                 feed_timestamp TEXT NOT NULL,
                 collected_at TEXT NOT NULL
@@ -125,6 +128,9 @@ async def _migrate_observations_table(db: aiosqlite.Connection) -> None:
         "departure_delay": "INTEGER",
         "trip_arrival_delay": "INTEGER",
         "trip_departure_delay": "INTEGER",
+        "last_position_update": "TEXT",
+        "next_stop_arrival_time": "TEXT",
+        "next_stop_departure_time": "TEXT",
     }
     for name, col_type in additions.items():
         if name not in columns:
@@ -195,6 +201,9 @@ async def record_observations(
             row.get("departure_delay"),
             row.get("trip_arrival_delay"),
             row.get("trip_departure_delay"),
+            row.get("last_position_update"),
+            row.get("next_stop_arrival_time"),
+            row.get("next_stop_departure_time"),
             feed_id,
             feed_ts,
             collected_at,
@@ -209,9 +218,10 @@ async def record_observations(
                 train_id, trip_id, route_id, stop_id, stop_name,
                 arrival_time, departure_time, location_stop_id, location_status,
                 scheduled_track, actual_track, arrival_delay, departure_delay,
-                trip_arrival_delay, trip_departure_delay,
+                trip_arrival_delay, trip_departure_delay, last_position_update,
+                next_stop_arrival_time, next_stop_departure_time,
                 feed_id, feed_timestamp, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -296,6 +306,48 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
     return result
 
 
+async def get_departed_from_stops(
+    trains: list[dict],
+    window_minutes: int | None = None,
+) -> dict[str, str]:
+    if not trains:
+        return {}
+
+    window = window_minutes or ARRIVAL_WINDOW_MINUTES
+    cutoff = _iso(_utc_now() - timedelta(minutes=window))
+    departed: dict[str, str] = {}
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        for train in trains:
+            if train.get("location_status") != "IN_TRANSIT_TO":
+                continue
+
+            train_id = train["train_id"]
+            current_stop = train.get("location_stop_id")
+            if not current_stop:
+                continue
+
+            cursor = await db.execute(
+                """
+                SELECT location_stop_id
+                FROM observations
+                WHERE train_id = ?
+                  AND collected_at >= ?
+                  AND location_stop_id IS NOT NULL
+                  AND location_stop_id != ?
+                  AND location_status = 'STOPPED_AT'
+                ORDER BY collected_at DESC
+                LIMIT 1
+                """,
+                (train_id, cutoff, current_stop),
+            )
+            row = await cursor.fetchone()
+            if row:
+                departed[train_id] = row[0]
+
+    return departed
+
+
 async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
     window = window_minutes or ARRIVAL_WINDOW_MINUTES
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
@@ -305,29 +357,27 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
         cursor = await db.execute(
             """
             SELECT
-                train_id, route_id, trip_id, location_stop_id, location_status,
-                trip_arrival_delay, trip_departure_delay, collected_at
-            FROM (
-                SELECT
-                    train_id,
-                    route_id,
-                    trip_id,
-                    location_stop_id,
-                    location_status,
-                    trip_arrival_delay,
-                    trip_departure_delay,
-                    collected_at,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY train_id
-                        ORDER BY collected_at DESC
-                    ) AS rn
+                o.train_id,
+                o.route_id,
+                o.trip_id,
+                o.location_stop_id,
+                o.location_status,
+                o.trip_arrival_delay,
+                o.trip_departure_delay,
+                o.last_position_update,
+                o.next_stop_arrival_time,
+                o.next_stop_departure_time,
+                o.collected_at
+            FROM observations o
+            INNER JOIN (
+                SELECT train_id, MAX(id) AS max_id
                 FROM observations
                 WHERE collected_at >= ?
                   AND location_stop_id IS NOT NULL
                   AND location_stop_id != ''
-            )
-            WHERE rn = 1
-            ORDER BY train_id
+                GROUP BY train_id
+            ) latest ON o.id = latest.max_id
+            ORDER BY o.train_id
             """,
             (cutoff,),
         )

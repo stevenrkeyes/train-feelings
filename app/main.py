@@ -20,7 +20,7 @@ from app.config import (
     STATIC_DIR,
 )
 from app import db
-from app.stops import enrich_train_locations
+from app.interpolate import enrich_map_trains
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,8 @@ async def map_trains(request: Request):
         return await _fetch_remote("/api/map/trains")
 
     locations = await db.get_train_locations()
-    return {"trains": enrich_train_locations(locations)}
+    departed_from = await db.get_departed_from_stops(locations)
+    return {"trains": enrich_map_trains(locations, departed_from)}
 
 
 @app.get("/api/feeds")

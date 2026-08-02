@@ -42,6 +42,9 @@ async function loadShapes() {
 }
 
 const markersByTrainId = new Map();
+const trainStateById = new Map();
+let animationFrameId = null;
+let lastTrainCount = 0;
 
 function trainIcon(isLate) {
   const emoji = isLate ? "😢" : "🚆";
@@ -54,12 +57,45 @@ function trainIcon(isLate) {
   });
 }
 
-function updateMarkers(trains) {
+function lerp(start, end, progress) {
+  return start + (end - start) * progress;
+}
+
+function interpolationProgress(train, nowMs = Date.now()) {
+  if (train.position_mode !== "interpolated" || !train.depart_at || !train.arrive_at) {
+    return 0;
+  }
+
+  const departMs = Date.parse(train.depart_at);
+  const arriveMs = Date.parse(train.arrive_at);
+  if (Number.isNaN(departMs) || Number.isNaN(arriveMs) || arriveMs <= departMs) {
+    return 0.5;
+  }
+
+  const elapsed = nowMs - departMs;
+  const duration = arriveMs - departMs;
+  return Math.max(0, Math.min(1, elapsed / duration));
+}
+
+function markerLatLng(train, nowMs = Date.now()) {
+  if (train.position_mode === "interpolated") {
+    const progress = interpolationProgress(train, nowMs);
+    return [
+      lerp(train.from_lat, train.to_lat, progress),
+      lerp(train.from_lon, train.to_lon, progress),
+    ];
+  }
+  return [train.to_lat, train.to_lon];
+}
+
+function syncMarkers(trains) {
   const seen = new Set();
 
   for (const train of trains) {
     seen.add(train.train_id);
-    const latLng = [train.lat, train.lon];
+    trainStateById.set(train.train_id, train);
+
+    const latLng = markerLatLng(train);
     let marker = markersByTrainId.get(train.train_id);
 
     if (!marker) {
@@ -71,19 +107,41 @@ function updateMarkers(trains) {
       marker.setIcon(trainIcon(train.is_late));
     }
 
-    marker.bindPopup(trainPopupHtml(train), {
-      closeButton: true,
-      autoClose: true,
-      closeOnClick: true,
-    });
+    marker.bindPopup(
+      () => trainPopupHtml(trainStateById.get(train.train_id) || train),
+      { closeButton: true, autoClose: true, closeOnClick: true }
+    );
   }
 
   for (const [trainId, marker] of markersByTrainId) {
     if (!seen.has(trainId)) {
       map.removeLayer(marker);
       markersByTrainId.delete(trainId);
+      trainStateById.delete(trainId);
     }
   }
+
+  lastTrainCount = trains.length;
+}
+
+function animateMarkers() {
+  if (document.hidden) {
+    animationFrameId = requestAnimationFrame(animateMarkers);
+    return;
+  }
+
+  for (const [trainId, marker] of markersByTrainId) {
+    const train = trainStateById.get(trainId);
+    if (!train) continue;
+    marker.setLatLng(markerLatLng(train));
+  }
+
+  animationFrameId = requestAnimationFrame(animateMarkers);
+}
+
+function startAnimationLoop() {
+  if (animationFrameId !== null) return;
+  animationFrameId = requestAnimationFrame(animateMarkers);
 }
 
 function escapeHtml(value) {
@@ -98,14 +156,53 @@ function trainPageUrl(trainId) {
   return `/trains?train_id=${encodeURIComponent(trainId)}`;
 }
 
+function formatTime(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function stationStatusLine(train) {
+  const name = train.stop_name || train.location_stop_id || "Unknown";
+  const status = train.location_status;
+
+  if (status === "STOPPED_AT") {
+    return `At ${name}`;
+  }
+  if (status === "INCOMING_AT") {
+    return `Arriving at ${name}`;
+  }
+  if (status === "IN_TRANSIT_TO") {
+    return `Going to ${name}`;
+  }
+  return `At ${name}`;
+}
+
 function trainPopupHtml(train) {
   const delays = [train.trip_arrival_delay, train.trip_departure_delay].filter((value) => value != null);
   const maxDelay = delays.length ? Math.max(...delays) : null;
+
+  const stationLine = `<div class="train-popup__station">${escapeHtml(stationStatusLine(train))}</div>`;
+
+  let departureLine = "";
+  if (train.location_status === "STOPPED_AT" && train.next_stop_departure_time) {
+    const departTime = formatTime(train.next_stop_departure_time);
+    if (departTime) {
+      departureLine = `<div class="train-popup__departure">Expected departure: ${escapeHtml(departTime)}</div>`;
+    }
+  }
+
+  const modeLine =
+    train.position_mode === "interpolated" && train.departed_from_stop_name
+      ? `<div class="train-popup__mode">From ${escapeHtml(train.departed_from_stop_name)}</div>`
+      : "";
+
   const lateLine =
     train.is_late && maxDelay != null
       ? `<div class="train-popup__late">${maxDelay}s behind schedule</div>`
       : "";
-  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${lateLine}</div>`;
+
+  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${stationLine}${departureLine}${modeLine}${lateLine}</div>`;
 }
 
 async function loadTrains() {
@@ -115,8 +212,8 @@ async function loadTrains() {
       throw new Error(`API error (${response.status})`);
     }
     const data = await response.json();
-    updateMarkers(data.trains || []);
-    statusEl.textContent = `Updated ${new Date().toLocaleTimeString()} · ${data.trains.length} train(s) on map`;
+    syncMarkers(data.trains || []);
+    statusEl.textContent = `Updated ${new Date().toLocaleTimeString()} · ${lastTrainCount} train(s) on map`;
     statusEl.classList.remove("error");
   } catch (error) {
     statusEl.textContent = `Could not load trains: ${error.message}`;
@@ -129,5 +226,6 @@ loadShapes().catch((error) => {
   statusEl.classList.add("error");
 });
 
+startAnimationLoop();
 loadTrains();
 setInterval(loadTrains, REFRESH_MS);

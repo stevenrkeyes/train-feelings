@@ -98,6 +98,24 @@ body {
   font-weight: 600;
 }
 
+.train-popup__mode {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  color: #4a5d78;
+}
+
+.train-popup__station {
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.train-popup__departure {
+  margin-top: 0.2rem;
+  font-size: 0.82rem;
+  color: #4a5d78;
+}
+
 @media (min-width: 640px) {
   .header--map {
     padding: 0.9rem 1.25rem;
