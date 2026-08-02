@@ -2,7 +2,11 @@ const statusEl = document.getElementById("status");
 const REFRESH_MS = 15000;
 
 const NYC_CENTER = [40.72, -73.96];
-const NYC_ZOOM = 12.5;
+const NYC_ZOOM = 13;
+const BASE_ICON_SIZE = 42;
+const BASE_FONT_REM = 2.03;
+// Map tiles scale 2x per zoom level; icons grow 1.5x per level (~50% of map scaling).
+const ZOOM_SIZE_GROWTH = 1.5;
 
 const map = L.map("map", {
   zoomControl: true,
@@ -46,16 +50,34 @@ const trainStateById = new Map();
 let animationFrameId = null;
 let lastTrainCount = 0;
 
+function zoomIconScale() {
+  return ZOOM_SIZE_GROWTH ** (map.getZoom() - NYC_ZOOM);
+}
+
 function trainIcon(isLate) {
   const emoji = isLate ? "😢" : "🚆";
   const label = isLate ? "late train" : "train";
+  const scale = zoomIconScale();
+  const size = Math.round(BASE_ICON_SIZE * scale);
+  const fontSize = BASE_FONT_REM * scale;
   return L.divIcon({
     className: "train-marker",
-    html: `<span class="train-marker__emoji" role="img" aria-label="${label}">${emoji}</span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    html: `<span class="train-marker__emoji" style="font-size:${fontSize}rem" role="img" aria-label="${label}">${emoji}</span>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
   });
 }
+
+function updateMarkerIcons() {
+  for (const [trainId, marker] of markersByTrainId) {
+    const train = trainStateById.get(trainId);
+    if (train) {
+      marker.setIcon(trainIcon(train.is_late));
+    }
+  }
+}
+
+map.on("zoom", updateMarkerIcons);
 
 function lerp(start, end, progress) {
   return start + (end - start) * progress;
