@@ -61,6 +61,9 @@ function zoomIconScale() {
 }
 
 function trainEmoji(train) {
+  if (train.saw_old_friend) {
+    return "😀";
+  }
   if (train.is_late) {
     if (train.train_in_front_also_late) {
       return "😡";
@@ -77,6 +80,9 @@ function trainEmoji(train) {
 }
 
 function trainIconLabel(train) {
+  if (train.saw_old_friend) {
+    return "saw an old friend";
+  }
   if (train.is_late) {
     if (train.train_in_front_also_late) {
       return "delayed by train in front";
@@ -280,6 +286,9 @@ function trainPopupHtml(train) {
 }
 
 function scheduleStatusLine(train, maxDelay, minDelay) {
+  if (train.saw_old_friend && train.old_friend_train_label) {
+    return `<div class="train-popup__old-friend">Saw an old friend (${escapeHtml(train.old_friend_train_label)})</div>`;
+  }
   if (train.is_late) {
     if (train.train_in_front_also_late && train.train_in_front_id) {
       return `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`;

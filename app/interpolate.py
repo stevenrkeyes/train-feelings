@@ -139,11 +139,36 @@ def interpolate_position(
     }
 
 
+def apply_old_friends(
+    trains: list[dict],
+    old_friends_by_train_id: dict[str, dict[str, str]] | None = None,
+) -> list[dict]:
+    old_friends = old_friends_by_train_id or {}
+    enriched: list[dict] = []
+    for train in trains:
+        friend = old_friends.get(train["train_id"])
+        if not friend:
+            enriched.append(train)
+            continue
+
+        friend_train_id = friend["old_friend_train_id"]
+        enriched.append(
+            {
+                **train,
+                "saw_old_friend": True,
+                "old_friend_train_id": friend_train_id,
+                "old_friend_train_label": format_train_display_name(friend_train_id),
+            }
+        )
+    return enriched
+
+
 def enrich_map_trains(
     trains: list[dict],
     departed_from: dict[str, str],
     day_punctuality: dict[str, dict] | None = None,
     consist_ids_by_train_id: dict[str, int] | None = None,
+    old_friends_by_train_id: dict[str, dict[str, str]] | None = None,
 ) -> list[dict]:
     enriched: list[dict] = []
     for train in trains:
@@ -157,4 +182,5 @@ def enrich_map_trains(
         {**train, "train_label": format_train_display_name(train.get("train_id"))}
         for train in enrich_train_in_front_also_late(enriched)
     ]
-    return apply_day_punctuality(labeled, day_punctuality or {}, consist_ids_by_train_id)
+    with_punctuality = apply_day_punctuality(labeled, day_punctuality or {}, consist_ids_by_train_id)
+    return apply_old_friends(with_punctuality, old_friends_by_train_id)

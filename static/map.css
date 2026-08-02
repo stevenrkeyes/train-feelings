@@ -143,6 +143,12 @@ body {
   font-weight: 600;
 }
 
+.train-popup__old-friend {
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  color: #2d6a4f;
+}
+
 .train-popup__mode {
   margin-top: 0.35rem;
   font-size: 0.82rem;

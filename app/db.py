@@ -22,6 +22,12 @@ from app.consist import (
     snapshot_from_row,
     successor_origin_terminal,
 )
+from app.old_friends import (
+    colocation_pairs,
+    reunion_until,
+    should_trigger_reunion,
+    trains_at_station_by_consist,
+)
 
 
 def _utc_now() -> datetime:
@@ -126,6 +132,7 @@ async def init_db(db_path: Path | None = None) -> None:
         await db.commit()
         await _migrate_observations_table(db)
         await _init_consist_tables(db)
+        await _init_old_friend_tables(db)
 
 
 async def _init_consist_tables(db: aiosqlite.Connection) -> None:
@@ -170,6 +177,43 @@ async def _init_consist_tables(db: aiosqlite.Connection) -> None:
             ON feelings_consist_trains(feelings_consist_id);
         CREATE INDEX IF NOT EXISTS idx_consist_trains_terminal
             ON feelings_consist_trains(route_id, last_end_terminal, last_seen_at);
+        """
+    )
+    await db.commit()
+
+
+async def _init_old_friend_tables(db: aiosqlite.Connection) -> None:
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS feelings_consist_colocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            consist_a_id INTEGER NOT NULL,
+            consist_b_id INTEGER NOT NULL,
+            stop_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            CHECK (consist_a_id < consist_b_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_consist_colocations_pair_stop
+            ON feelings_consist_colocations(consist_a_id, consist_b_id, stop_id);
+        CREATE INDEX IF NOT EXISTS idx_consist_colocations_open
+            ON feelings_consist_colocations(ended_at);
+
+        CREATE TABLE IF NOT EXISTS feelings_consist_reunions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            consist_a_id INTEGER NOT NULL,
+            consist_b_id INTEGER NOT NULL,
+            stop_id TEXT NOT NULL,
+            train_a_id TEXT NOT NULL,
+            train_b_id TEXT NOT NULL,
+            triggered_at TEXT NOT NULL,
+            reunion_until TEXT NOT NULL,
+            CHECK (consist_a_id < consist_b_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_consist_reunions_until
+            ON feelings_consist_reunions(reunion_until);
         """
     )
     await db.commit()
@@ -294,6 +338,7 @@ async def record_observations(
         await db.commit()
 
     await update_consists_from_poll(rows, collected_at)
+    await update_colocations_from_poll(rows, collected_at)
 
 
 def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
@@ -518,6 +563,142 @@ async def _assign_reversal_links(
         assignments[train_id] = (consist_id, None)
 
     return assignments
+
+
+async def update_colocations_from_poll(rows: list[dict], collected_at: str) -> None:
+    train_ids = list({row["train_id"] for row in rows})
+    consist_by_train = await get_feelings_consist_ids(train_ids) if train_ids else {}
+
+    by_stop = trains_at_station_by_consist(rows, consist_by_train)
+    active_pairs = colocation_pairs(by_stop)
+    active_keys = {(consist_a, consist_b, stop_id) for stop_id, consist_a, consist_b, _, _ in active_pairs}
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(
+            "DELETE FROM feelings_consist_reunions WHERE reunion_until <= ?",
+            (collected_at,),
+        )
+
+        for stop_id, consist_a, consist_b, train_a_id, train_b_id in active_pairs:
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM feelings_consist_colocations
+                WHERE consist_a_id = ?
+                  AND consist_b_id = ?
+                  AND stop_id = ?
+                  AND ended_at IS NULL
+                LIMIT 1
+                """,
+                (consist_a, consist_b, stop_id),
+            )
+            if await cursor.fetchone():
+                continue
+
+            cursor = await db.execute(
+                """
+                SELECT ended_at
+                FROM feelings_consist_colocations
+                WHERE consist_a_id = ?
+                  AND consist_b_id = ?
+                  AND stop_id = ?
+                  AND ended_at IS NOT NULL
+                ORDER BY ended_at DESC
+                LIMIT 1
+                """,
+                (consist_a, consist_b, stop_id),
+            )
+            last_ended = await cursor.fetchone()
+            if last_ended and should_trigger_reunion(last_ended["ended_at"], collected_at):
+                await db.execute(
+                    """
+                    INSERT INTO feelings_consist_reunions (
+                        consist_a_id, consist_b_id, stop_id,
+                        train_a_id, train_b_id, triggered_at, reunion_until
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        consist_a,
+                        consist_b,
+                        stop_id,
+                        train_a_id,
+                        train_b_id,
+                        collected_at,
+                        reunion_until(collected_at),
+                    ),
+                )
+
+            await db.execute(
+                """
+                INSERT INTO feelings_consist_colocations (
+                    consist_a_id, consist_b_id, stop_id, started_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (consist_a, consist_b, stop_id, collected_at),
+            )
+
+        cursor = await db.execute(
+            """
+            SELECT id, consist_a_id, consist_b_id, stop_id
+            FROM feelings_consist_colocations
+            WHERE ended_at IS NULL
+            """
+        )
+        for row in await cursor.fetchall():
+            key = (row["consist_a_id"], row["consist_b_id"], row["stop_id"])
+            if key not in active_keys:
+                await db.execute(
+                    """
+                    UPDATE feelings_consist_colocations
+                    SET ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (collected_at, row["id"]),
+                )
+
+        await db.commit()
+
+
+async def get_active_old_friends(train_ids: list[str]) -> dict[str, dict[str, str]]:
+    if not train_ids:
+        return {}
+
+    consist_by_train = await get_feelings_consist_ids(train_ids)
+    if not consist_by_train:
+        return {}
+
+    now = _iso(_utc_now())
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT consist_a_id, consist_b_id, train_a_id, train_b_id
+            FROM feelings_consist_reunions
+            WHERE reunion_until > ?
+            """,
+            (now,),
+        )
+        reunions = [dict(row) for row in await cursor.fetchall()]
+
+    result: dict[str, dict[str, str]] = {}
+    for train_id in train_ids:
+        consist_id = consist_by_train.get(train_id)
+        if consist_id is None:
+            continue
+
+        for reunion in reunions:
+            if consist_id == reunion["consist_a_id"]:
+                friend_train_id = reunion["train_b_id"]
+            elif consist_id == reunion["consist_b_id"]:
+                friend_train_id = reunion["train_a_id"]
+            else:
+                continue
+
+            result[train_id] = {"old_friend_train_id": friend_train_id}
+            break
+
+    return result
 
 
 async def get_feelings_consist_ids(train_ids: list[str]) -> dict[str, int]:
