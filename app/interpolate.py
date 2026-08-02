@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.following_late import enrich_train_in_front_also_late
 from app.schedule import is_train_early, is_train_late
 from app.stops import lookup_stop
+from app.train_id import format_train_display_name
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -146,4 +147,7 @@ def enrich_map_trains(trains: list[dict], departed_from: dict[str, str]) -> list
         )
         if position is not None:
             enriched.append(position)
-    return enrich_train_in_front_also_late(enriched)
+    return [
+        {**train, "train_label": format_train_display_name(train.get("train_id"))}
+        for train in enrich_train_in_front_also_late(enriched)
+    ]
