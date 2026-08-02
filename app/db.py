@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,16 @@ from app.old_friends import (
 from app.snoozing import AT_STATION_STATUSES
 
 _db_lock = asyncio.Lock()
+_punctuality_cache: dict[str, dict] | None = None
+_punctuality_cache_at: float | None = None
+_punctuality_refresh_lock = asyncio.Lock()
+PUNCTUALITY_CACHE_SECONDS = 300
+_EMPTY_PUNCTUALITY = {
+    "consistent_day": False,
+    "day_on_time_rate": None,
+    "day_on_time_samples": 0,
+    "day_tracking_minutes": 0.0,
+}
 
 
 def _utc_now() -> datetime:
@@ -135,6 +146,8 @@ async def init_db(db_path: Path | None = None) -> None:
                 ON observations(train_id, collected_at);
             CREATE INDEX IF NOT EXISTS idx_obs_collected
                 ON observations(collected_at);
+            CREATE INDEX IF NOT EXISTS idx_obs_train_day
+                ON observations(train_id, collected_at);
 
             CREATE TABLE IF NOT EXISTS feed_health (
                 feed_id TEXT PRIMARY KEY,
@@ -153,6 +166,7 @@ async def init_db(db_path: Path | None = None) -> None:
         )
         await db.commit()
         await _migrate_observations_table(db)
+        await _ensure_obs_train_day_index(db)
         await _init_consist_tables(db)
         await _init_old_friend_tables(db)
 
@@ -360,8 +374,8 @@ async def record_observations(
             )
             await db.commit()
 
-        await update_consists_from_poll(rows, collected_at)
-        await update_colocations_from_poll(rows, collected_at)
+    await update_consists_from_poll(rows, collected_at)
+    await update_colocations_from_poll(rows, collected_at)
 
 
 def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
@@ -378,7 +392,7 @@ async def update_consists_from_poll(rows: list[dict], collected_at: str) -> None
     if not snapshots:
         return
 
-    async with _db_connect() as db:
+    async with _db_write() as db:
         db.row_factory = aiosqlite.Row
         new_snapshots: list[dict] = []
         existing_snapshots: list[tuple[dict, aiosqlite.Row]] = []
@@ -596,7 +610,7 @@ async def update_colocations_from_poll(rows: list[dict], collected_at: str) -> N
     active_pairs = colocation_pairs(by_stop)
     active_keys = {(consist_a, consist_b, stop_id) for stop_id, consist_a, consist_b, _, _ in active_pairs}
 
-    async with _db_connect() as db:
+    async with _db_write() as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             "DELETE FROM feelings_consist_reunions WHERE reunion_until <= ?",
@@ -791,11 +805,33 @@ async def update_feed_health(
         await db.commit()
 
 
-async def prune_old_data() -> None:
+async def prune_old_data(batch_size: int = 5000) -> int:
     cutoff = _iso(_utc_now() - timedelta(hours=DATA_RETENTION_HOURS))
-    async with _db_write() as db:
-        await db.execute("DELETE FROM observations WHERE collected_at < ?", (cutoff,))
-        await db.commit()
+    total_deleted = 0
+
+    while True:
+        async with _db_write() as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM observations
+                WHERE id IN (
+                    SELECT id FROM observations
+                    WHERE collected_at < ?
+                    LIMIT ?
+                )
+                """,
+                (cutoff, batch_size),
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+
+        if deleted <= 0:
+            break
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+
+    return total_deleted
 
 
 async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[dict]:
@@ -849,37 +885,40 @@ async def get_departed_from_stops(
     if not trains:
         return {}
 
+    in_transit = {
+        train["train_id"]: train.get("location_stop_id")
+        for train in trains
+        if train.get("location_status") == "IN_TRANSIT_TO" and train.get("location_stop_id")
+    }
+    if not in_transit:
+        return {}
+
     window = window_minutes or ARRIVAL_WINDOW_MINUTES
     cutoff = _iso(_utc_now() - timedelta(minutes=window))
-    departed: dict[str, str] = {}
+    placeholders = ",".join("?" * len(in_transit))
 
     async with _db_connect() as db:
-        for train in trains:
-            if train.get("location_status") != "IN_TRANSIT_TO":
-                continue
+        cursor = await db.execute(
+            f"""
+            SELECT train_id, location_stop_id
+            FROM observations
+            WHERE train_id IN ({placeholders})
+              AND collected_at >= ?
+              AND location_stop_id IS NOT NULL
+              AND location_status = 'STOPPED_AT'
+            ORDER BY train_id, collected_at DESC
+            """,
+            [*in_transit.keys(), cutoff],
+        )
+        rows = await cursor.fetchall()
 
-            train_id = train["train_id"]
-            current_stop = train.get("location_stop_id")
-            if not current_stop:
-                continue
-
-            cursor = await db.execute(
-                """
-                SELECT location_stop_id
-                FROM observations
-                WHERE train_id = ?
-                  AND collected_at >= ?
-                  AND location_stop_id IS NOT NULL
-                  AND location_stop_id != ?
-                  AND location_status = 'STOPPED_AT'
-                ORDER BY collected_at DESC
-                LIMIT 1
-                """,
-                (train_id, cutoff, current_stop),
-            )
-            row = await cursor.fetchone()
-            if row:
-                departed[train_id] = row[0]
+    departed: dict[str, str] = {}
+    for train_id, stop_id in rows:
+        if train_id in departed:
+            continue
+        current_stop = in_transit[train_id]
+        if stop_id != current_stop:
+            departed[train_id] = stop_id
 
     return departed
 
@@ -981,68 +1020,124 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
         return [dict(row) for row in await cursor.fetchall()]
 
 
-async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
+async def _ensure_obs_train_day_index(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_obs_train_day'"
+    )
+    if await cursor.fetchone():
+        return
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_obs_train_day ON observations(train_id, collected_at)"
+    )
+    await db.commit()
+
+
+async def get_train_day_punctuality(
+    train_ids: list[str],
+    *,
+    lightweight: bool = True,
+) -> dict[str, dict]:
+    global _punctuality_cache, _punctuality_cache_at
+
     if not train_ids:
         return {}
 
-    consist_by_train = await get_feelings_consist_ids(train_ids)
-    unique_consist_ids = list(dict.fromkeys(consist_by_train.values()))
-    members_by_consist = await get_train_ids_for_consists(unique_consist_ids)
+    now = time.monotonic()
+    if (
+        _punctuality_cache is not None
+        and _punctuality_cache_at is not None
+        and now - _punctuality_cache_at < PUNCTUALITY_CACHE_SECONDS
+    ):
+        return {
+            train_id: _punctuality_cache.get(train_id, _EMPTY_PUNCTUALITY)
+            for train_id in train_ids
+        }
 
-    all_train_ids = list(
-        dict.fromkeys(
-            train_id
-            for member_ids in members_by_consist.values()
-            for train_id in member_ids
-        )
-    )
-    if not all_train_ids:
-        all_train_ids = train_ids
+    async with _punctuality_refresh_lock:
+        now = time.monotonic()
+        if (
+            _punctuality_cache is not None
+            and _punctuality_cache_at is not None
+            and now - _punctuality_cache_at < PUNCTUALITY_CACHE_SECONDS
+        ):
+            return {
+                train_id: _punctuality_cache.get(train_id, _EMPTY_PUNCTUALITY)
+                for train_id in train_ids
+            }
 
-    day_start, day_end = today_bounds_utc()
-    placeholders = ",".join("?" * len(all_train_ids))
-    params = [*all_train_ids, _iso(day_start), _iso(day_end)]
-
-    async with _db_connect() as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            f"""
-            SELECT
-                train_id,
-                collected_at,
-                MAX(trip_arrival_delay) AS trip_arrival_delay,
-                MAX(trip_departure_delay) AS trip_departure_delay
-            FROM observations
-            WHERE train_id IN ({placeholders})
-              AND collected_at >= ?
-              AND collected_at < ?
-            GROUP BY train_id, collected_at
-            ORDER BY train_id, collected_at
-            """,
-            params,
-        )
-        rows = [dict(row) for row in await cursor.fetchall()]
-
-    samples_by_train: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        samples_by_train[row["train_id"]].append(row)
-
-    stats_by_consist: dict[int, dict] = {}
-    for consist_id, member_ids in members_by_consist.items():
-        merged: list[dict] = []
-        for member_id in member_ids:
-            merged.extend(samples_by_train.get(member_id, []))
-        merged.sort(key=lambda sample: sample.get("collected_at") or "")
-        stats_by_consist[consist_id] = summarize_day_punctuality(merged)
-
-    result: dict[str, dict] = {}
-    for train_id in train_ids:
-        consist_id = consist_by_train.get(train_id)
-        if consist_id and consist_id in stats_by_consist:
-            result[train_id] = stats_by_consist[consist_id]
+        if lightweight:
+            all_train_ids = train_ids
+            consist_by_train: dict[str, int] = {}
+            members_by_consist: dict[int, list[str]] = {}
         else:
-            result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
-    return result
+            consist_by_train = await get_feelings_consist_ids(train_ids)
+            unique_consist_ids = list(dict.fromkeys(consist_by_train.values()))
+            members_by_consist = await get_train_ids_for_consists(unique_consist_ids)
+            all_train_ids = list(
+                dict.fromkeys(
+                    train_id
+                    for member_ids in members_by_consist.values()
+                    for train_id in member_ids
+                )
+            )
+            if not all_train_ids:
+                all_train_ids = train_ids
+
+        day_start, day_end = today_bounds_utc()
+        placeholders = ",".join("?" * len(all_train_ids))
+        params = [*all_train_ids, _iso(day_start), _iso(day_end)]
+
+        async with _db_connect() as db:
+            await _ensure_obs_train_day_index(db)
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    train_id,
+                    MIN(collected_at) AS collected_at,
+                    MAX(trip_arrival_delay) AS trip_arrival_delay,
+                    MAX(trip_departure_delay) AS trip_departure_delay
+                FROM observations
+                WHERE train_id IN ({placeholders})
+                  AND collected_at >= ?
+                  AND collected_at < ?
+                GROUP BY train_id, (cast(strftime('%s', collected_at) as integer) / 300)
+                ORDER BY train_id, collected_at
+                """,
+                params,
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+
+        samples_by_train: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            samples_by_train[row["train_id"]].append(row)
+
+        result: dict[str, dict] = {}
+        if lightweight:
+            for train_id in train_ids:
+                result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
+        else:
+            stats_by_consist: dict[int, dict] = {}
+            for consist_id, member_ids in members_by_consist.items():
+                merged: list[dict] = []
+                for member_id in member_ids:
+                    merged.extend(samples_by_train.get(member_id, []))
+                merged.sort(key=lambda sample: sample.get("collected_at") or "")
+                stats_by_consist[consist_id] = summarize_day_punctuality(merged)
+
+            for train_id in train_ids:
+                consist_id = consist_by_train.get(train_id)
+                if consist_id and consist_id in stats_by_consist:
+                    result[train_id] = stats_by_consist[consist_id]
+                else:
+                    result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
+
+        _punctuality_cache = result
+        _punctuality_cache_at = now
+        return {
+            train_id: result.get(train_id, _EMPTY_PUNCTUALITY)
+            for train_id in train_ids
+        }
 
 
 async def get_feed_health() -> list[dict]:

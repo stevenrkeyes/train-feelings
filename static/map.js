@@ -458,8 +458,11 @@ function scheduleStatusLine(train, maxDelay, minDelay) {
 }
 
 async function loadTrains() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+
   try {
-    const response = await fetch("/api/map/trains");
+    const response = await fetch("/api/map/trains", { signal: controller.signal });
     if (!response.ok) {
       throw new Error(`API error (${response.status})`);
     }
@@ -467,7 +470,14 @@ async function loadTrains() {
     syncMarkers(data.trains || []);
     setStatus(`Updated ${new Date().toLocaleTimeString()} · ${lastTrainCount} train(s) on map`);
   } catch (error) {
-    setStatus(`Could not load trains: ${error.message}`, true);
+    const message =
+      error.name === "AbortError"
+        ? "Request timed out — server may be busy"
+        : error.message;
+    console.error("loadTrains failed:", error);
+    setStatus(`Could not load trains: ${message}`, true);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

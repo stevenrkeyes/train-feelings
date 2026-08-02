@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -147,23 +148,45 @@ async def map_trains(request: Request):
     if DATA_SOURCE == "remote":
         return await _fetch_remote("/api/map/trains")
 
+    started = time.monotonic()
     locations = await db.get_train_locations()
+    t_locations = time.monotonic()
+
     departed_from = await db.get_departed_from_stops(locations)
+    t_departed = time.monotonic()
+
     train_ids = [train["train_id"] for train in locations]
     day_punctuality = await db.get_train_day_punctuality(train_ids)
+    t_punctuality = time.monotonic()
+
     consist_ids = await db.get_feelings_consist_ids(train_ids)
     old_friends = await db.get_active_old_friends(train_ids)
     dwell_since = await db.get_station_dwell_since(locations)
-    return {
-        "trains": enrich_map_trains(
-            locations,
-            departed_from,
-            day_punctuality,
-            consist_ids,
-            old_friends,
-            dwell_since,
-        ),
-    }
+    t_queries = time.monotonic()
+
+    trains = enrich_map_trains(
+        locations,
+        departed_from,
+        day_punctuality,
+        consist_ids,
+        old_friends,
+        dwell_since,
+    )
+    elapsed = time.monotonic() - started
+    if elapsed > 5:
+        logger.warning(
+            "map/trains slow (%.1fs, %d trains): locations=%.1fs departed=%.1fs "
+            "punctuality=%.1fs other=%.1fs enrich=%.1fs",
+            elapsed,
+            len(trains),
+            t_locations - started,
+            t_departed - t_locations,
+            t_punctuality - t_departed,
+            t_queries - t_punctuality,
+            time.monotonic() - t_queries,
+        )
+
+    return {"trains": trains}
 
 
 @app.get("/api/feeds")

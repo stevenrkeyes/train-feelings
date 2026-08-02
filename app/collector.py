@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,8 @@ from app.feeds import FEEDS
 
 logger = logging.getLogger(__name__)
 NY_TZ = ZoneInfo("America/New_York")
+PRUNE_EVERY_SECONDS = 3600
+_last_prune_at: float | None = None
 
 
 def _train_key(trip) -> str:
@@ -165,14 +168,28 @@ async def poll_all_feeds() -> None:
 
 
 async def collector_loop(stop_event: asyncio.Event) -> None:
+    global _last_prune_at
+
     logger.info("Collector started (interval=%ss)", POLL_INTERVAL_SECONDS)
     while not stop_event.is_set():
+        cycle_start = time.monotonic()
         try:
             await poll_all_feeds()
-            await prune_old_data()
+
+            now = time.monotonic()
+            if _last_prune_at is None or now - _last_prune_at >= PRUNE_EVERY_SECONDS:
+                deleted = await prune_old_data()
+                _last_prune_at = now
+                if deleted:
+                    logger.info("Pruned %d old observations", deleted)
+
             await prune_expired_sessions()
         except Exception:
             logger.exception("Collector loop error")
+
+        elapsed = time.monotonic() - cycle_start
+        if elapsed > POLL_INTERVAL_SECONDS:
+            logger.warning("Collector cycle took %.1fs", elapsed)
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
