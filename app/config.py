@@ -13,7 +13,7 @@ INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "")
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", str(DATA_DIR / "trains.db")))
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "30"))
 ARRIVAL_WINDOW_MINUTES = int(os.environ.get("ARRIVAL_WINDOW_MINUTES", "10"))
-DATA_RETENTION_HOURS = int(os.environ.get("DATA_RETENTION_HOURS", "24"))
+DATA_RETENTION_HOURS = int(os.environ.get("DATA_RETENTION_HOURS", "2"))
 
 SESSION_COOKIE_NAME = "tf_session"
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-change-me-in-production")

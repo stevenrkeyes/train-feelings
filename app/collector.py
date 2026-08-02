@@ -13,15 +13,17 @@ from app.db import (
     finalize_poll_enrichment,
     prune_expired_sessions,
     prune_old_data,
+    reclaim_database_space,
     record_observation_rows,
     update_feed_health,
+    vacuum_database,
 )
 from app.feeds import FEEDS
 
 logger = logging.getLogger(__name__)
 NY_TZ = ZoneInfo("America/New_York")
-PRUNE_EVERY_SECONDS = 3600
-_last_prune_at: float | None = None
+VACUUM_MIN_INTERVAL_SECONDS = 600
+_last_vacuum_at: float | None = None
 
 
 def _train_key(trip) -> str:
@@ -175,7 +177,7 @@ async def poll_all_feeds() -> None:
 
 
 async def collector_loop(stop_event: asyncio.Event) -> None:
-    global _last_prune_at
+    global _last_vacuum_at
 
     logger.info("Collector started (interval=%ss)", POLL_INTERVAL_SECONDS)
     while not stop_event.is_set():
@@ -183,12 +185,20 @@ async def collector_loop(stop_event: asyncio.Event) -> None:
         try:
             await poll_all_feeds()
 
+            deleted = await prune_old_data()
+            if deleted:
+                logger.info("Pruned %d old observations", deleted)
+
+            await reclaim_database_space()
+
             now = time.monotonic()
-            if _last_prune_at is None or now - _last_prune_at >= PRUNE_EVERY_SECONDS:
-                deleted = await prune_old_data()
-                _last_prune_at = now
-                if deleted:
-                    logger.info("Pruned %d old observations", deleted)
+            if deleted > 0 and (
+                _last_vacuum_at is None
+                or now - _last_vacuum_at >= VACUUM_MIN_INTERVAL_SECONDS
+            ):
+                await vacuum_database()
+                _last_vacuum_at = now
+                logger.info("Vacuumed database after pruning")
 
             await prune_expired_sessions()
         except Exception:

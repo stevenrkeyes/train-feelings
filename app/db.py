@@ -857,6 +857,18 @@ async def prune_old_data(batch_size: int = 5000) -> int:
     return total_deleted
 
 
+async def reclaim_database_space() -> None:
+    async with _db_write() as db:
+        await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        await db.commit()
+
+
+async def vacuum_database() -> None:
+    async with _db_write() as db:
+        await db.execute("VACUUM")
+        await db.commit()
+
+
 async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[dict]:
     window = window_minutes or ARRIVAL_WINDOW_MINUTES
     cutoff = _iso(_utc_now() - timedelta(minutes=window))

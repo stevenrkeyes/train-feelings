@@ -13,6 +13,7 @@ primary_region = 'ewr'
   DATA_SOURCE = 'local'
   COLLECTOR_ENABLED = 'true'
   POLL_INTERVAL_SECONDS = '30'
+  DATA_RETENTION_HOURS = '2'
 
 [http_service]
   internal_port = 8080
