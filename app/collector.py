@@ -121,12 +121,13 @@ def _poll_feed_sync(feed_id: str, url: str) -> tuple[str, list[dict], datetime |
         return "unhealthy", [], None, str(exc)
 
 
-async def poll_feed(feed_id: str, url: str) -> None:
-    loop = asyncio.get_running_loop()
-    status, rows, feed_timestamp, error = await loop.run_in_executor(
-        None, _poll_feed_sync, feed_id, url
-    )
-
+async def _persist_feed_poll(
+    feed_id: str,
+    status: str,
+    rows: list[dict],
+    feed_timestamp: datetime | None,
+    error: str | None,
+) -> None:
     if feed_timestamp or status == "healthy":
         await update_feed_health(
             feed_id,
@@ -142,8 +143,25 @@ async def poll_feed(feed_id: str, url: str) -> None:
         logger.info("Recorded %d observations from feed %s", len(rows), feed_id)
 
 
+async def poll_feed(feed_id: str, url: str) -> None:
+    loop = asyncio.get_running_loop()
+    status, rows, feed_timestamp, error = await loop.run_in_executor(
+        None, _poll_feed_sync, feed_id, url
+    )
+    await _persist_feed_poll(feed_id, status, rows, feed_timestamp, error)
+
+
 async def poll_all_feeds() -> None:
-    await asyncio.gather(*(poll_feed(feed_id, url) for feed_id, url in FEEDS.items()))
+    loop = asyncio.get_running_loop()
+    feed_items = list(FEEDS.items())
+    results = await asyncio.gather(
+        *(
+            loop.run_in_executor(None, _poll_feed_sync, feed_id, url)
+            for feed_id, url in feed_items
+        )
+    )
+    for (feed_id, _), (status, rows, feed_timestamp, error) in zip(feed_items, results):
+        await _persist_feed_poll(feed_id, status, rows, feed_timestamp, error)
 
 
 async def collector_loop(stop_event: asyncio.Event) -> None:

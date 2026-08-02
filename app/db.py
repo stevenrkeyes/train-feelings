@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,6 +32,8 @@ from app.old_friends import (
     trains_at_station_by_consist,
 )
 from app.snoozing import AT_STATION_STATUSES
+
+_db_lock = asyncio.Lock()
 
 
 def _utc_now() -> datetime:
@@ -82,6 +86,13 @@ def _db_path(db_path: Path | None = None) -> Path:
 
 def _db_connect(db_path: Path | None = None):
     return aiosqlite.connect(_db_path(db_path), timeout=30.0)
+
+
+@asynccontextmanager
+async def _db_write(db_path: Path | None = None):
+    async with _db_lock:
+        async with _db_connect(db_path) as db:
+            yield db
 
 
 async def init_db(db_path: Path | None = None) -> None:
@@ -260,7 +271,7 @@ async def create_session() -> str:
     now = _utc_now()
     expires = now + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
 
-    async with _db_connect() as db:
+    async with _db_write() as db:
         await db.execute(
             "INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)",
             (token, _iso(now), _iso(expires)),
@@ -286,7 +297,7 @@ async def validate_session(token: str | None) -> bool:
 
 async def prune_expired_sessions() -> None:
     now = _iso(_utc_now())
-    async with _db_connect() as db:
+    async with _db_write() as db:
         await db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         await db.commit()
 
@@ -331,25 +342,26 @@ async def record_observations(
         for row in rows
     ]
 
-    async with _db_connect() as db:
-        await db.executemany(
-            """
-            INSERT INTO observations (
-                train_id, trip_id, route_id, stop_id, stop_name,
-                arrival_time, departure_time, location_stop_id, location_status,
-                scheduled_track, actual_track, arrival_delay, departure_delay,
-                trip_arrival_delay, trip_departure_delay, last_position_update,
-                next_stop_arrival_time, next_stop_departure_time,
-                shape_id, direction, current_stop_sequence,
-                feed_id, feed_timestamp, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            values,
-        )
-        await db.commit()
+    async with _db_lock:
+        async with _db_connect() as db:
+            await db.executemany(
+                """
+                INSERT INTO observations (
+                    train_id, trip_id, route_id, stop_id, stop_name,
+                    arrival_time, departure_time, location_stop_id, location_status,
+                    scheduled_track, actual_track, arrival_delay, departure_delay,
+                    trip_arrival_delay, trip_departure_delay, last_position_update,
+                    next_stop_arrival_time, next_stop_departure_time,
+                    shape_id, direction, current_stop_sequence,
+                    feed_id, feed_timestamp, collected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            await db.commit()
 
-    await update_consists_from_poll(rows, collected_at)
-    await update_colocations_from_poll(rows, collected_at)
+        await update_consists_from_poll(rows, collected_at)
+        await update_colocations_from_poll(rows, collected_at)
 
 
 def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
@@ -762,7 +774,7 @@ async def update_feed_health(
     now = _iso(_utc_now())
     feed_ts = _iso(feed_timestamp) if feed_timestamp else None
 
-    async with _db_connect() as db:
+    async with _db_write() as db:
         await db.execute(
             """
             INSERT INTO feed_health (
@@ -781,7 +793,7 @@ async def update_feed_health(
 
 async def prune_old_data() -> None:
     cutoff = _iso(_utc_now() - timedelta(hours=DATA_RETENTION_HOURS))
-    async with _db_connect() as db:
+    async with _db_write() as db:
         await db.execute("DELETE FROM observations WHERE collected_at < ?", (cutoff,))
         await db.commit()
 
