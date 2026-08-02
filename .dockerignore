@@ -1,0 +1,15 @@
+# Local dev / secrets — not used in the image
+.env
+.venv/
+venv/
+
+# SQLite + GTFS live on the Fly volume at /data, not in the image
+data/
+*.db
+
+# Git / editor noise
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
