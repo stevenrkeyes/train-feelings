@@ -153,6 +153,7 @@ async def map_trains(request: Request):
     day_punctuality = await db.get_train_day_punctuality(train_ids)
     consist_ids = await db.get_feelings_consist_ids(train_ids)
     old_friends = await db.get_active_old_friends(train_ids)
+    dwell_since = await db.get_station_dwell_since(locations)
     return {
         "trains": enrich_map_trains(
             locations,
@@ -160,6 +161,7 @@ async def map_trains(request: Request):
             day_punctuality,
             consist_ids,
             old_friends,
+            dwell_since,
         ),
     }
 

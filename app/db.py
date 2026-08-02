@@ -14,6 +14,7 @@ from app.config import (
     EVENT_FUTURE_MARGIN_SECONDS,
     HISTORY_LIMIT,
     SESSION_MAX_AGE_SECONDS,
+    SNORING_STATION_MINUTES,
 )
 from app.punctuality import summarize_day_punctuality, today_bounds_utc
 from app.consist import (
@@ -28,6 +29,7 @@ from app.old_friends import (
     should_trigger_reunion,
     trains_at_station_by_consist,
 )
+from app.snoozing import AT_STATION_STATUSES
 
 
 def _utc_now() -> datetime:
@@ -859,6 +861,58 @@ async def get_departed_from_stops(
                 departed[train_id] = row[0]
 
     return departed
+
+
+async def get_station_dwell_since(
+    trains: list[dict],
+    window_minutes: int | None = None,
+) -> dict[str, str]:
+    """When each train's current continuous stay at its present stop began."""
+    if not trains:
+        return {}
+
+    window = window_minutes or max(SNORING_STATION_MINUTES + 5, 30)
+    cutoff = _iso(_utc_now() - timedelta(minutes=window))
+    dwell_since: dict[str, str] = {}
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        for train in trains:
+            status = train.get("location_status")
+            stop_id = train.get("location_stop_id")
+            if status not in AT_STATION_STATUSES or not stop_id:
+                continue
+
+            train_id = train["train_id"]
+            cursor = await db.execute(
+                """
+                SELECT collected_at, location_stop_id, location_status
+                FROM observations
+                WHERE train_id = ?
+                  AND collected_at >= ?
+                  AND location_stop_id IS NOT NULL
+                ORDER BY collected_at DESC
+                """,
+                (train_id, cutoff),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                continue
+
+            streak_start: str | None = None
+            for row in rows:
+                if (
+                    row["location_stop_id"] == stop_id
+                    and row["location_status"] in AT_STATION_STATUSES
+                ):
+                    streak_start = row["collected_at"]
+                    continue
+                break
+
+            if streak_start:
+                dwell_since[train_id] = streak_start
+
+    return dwell_since
 
 
 async def get_train_locations(window_minutes: int | None = None) -> list[dict]:

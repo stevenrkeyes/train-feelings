@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.following_late import enrich_train_in_front_also_late
+from app.snoozing import apply_snoozing
 from app.punctuality import apply_day_punctuality
 from app.schedule import is_train_early, is_train_late
 from app.stops import lookup_stop
@@ -169,6 +170,7 @@ def enrich_map_trains(
     day_punctuality: dict[str, dict] | None = None,
     consist_ids_by_train_id: dict[str, int] | None = None,
     old_friends_by_train_id: dict[str, dict[str, str]] | None = None,
+    dwell_since_by_train_id: dict[str, str] | None = None,
 ) -> list[dict]:
     enriched: list[dict] = []
     for train in trains:
@@ -183,4 +185,5 @@ def enrich_map_trains(
         for train in enrich_train_in_front_also_late(enriched)
     ]
     with_punctuality = apply_day_punctuality(labeled, day_punctuality or {}, consist_ids_by_train_id)
-    return apply_old_friends(with_punctuality, old_friends_by_train_id)
+    with_snoozing = apply_snoozing(with_punctuality, dwell_since_by_train_id)
+    return apply_old_friends(with_snoozing, old_friends_by_train_id)
