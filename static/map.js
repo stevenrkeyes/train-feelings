@@ -55,7 +55,7 @@ function zoomIconScale() {
 }
 
 function trainIcon(isLate) {
-  const emoji = isLate ? "😢" : "🚆";
+  const emoji = isLate ? "😞" : "🚆";
   const label = isLate ? "late train" : "train";
   const scale = zoomIconScale();
   const size = Math.round(BASE_ICON_SIZE * scale);
