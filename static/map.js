@@ -123,10 +123,12 @@ function trainIcon(train) {
 }
 
 function updateMarkerIcons() {
+  recomputeStationJogOffsets();
   for (const [trainId, marker] of markersByTrainId) {
     const train = trainStateById.get(trainId);
     if (train) {
       marker.setIcon(trainIcon(train));
+      marker.setLatLng(markerDisplayLatLng(train));
     }
   }
 }
@@ -162,6 +164,73 @@ function markerLatLng(train, nowMs = Date.now()) {
     ];
   }
   return [train.to_lat, train.to_lon];
+}
+
+function isAtStation(train) {
+  const status = train.location_status;
+  return status === "STOPPED_AT" || status === "INCOMING_AT";
+}
+
+function iconPixelSize() {
+  return Math.round(BASE_ICON_SIZE * zoomIconScale());
+}
+
+function applyPixelOffset(latLng, offsetPx) {
+  if (!offsetPx) {
+    return latLng;
+  }
+  const point = map.latLngToContainerPoint(latLng);
+  return map.containerPointToLatLng([point.x + offsetPx.x, point.y + offsetPx.y]);
+}
+
+function stationGroupKey(train) {
+  const stopId = train.location_stop_id;
+  if (stopId) {
+    // MTA platform stops share a parent station id without the N/S suffix (e.g. 701N + 701S → 701).
+    return stopId.replace(/[NS]$/, "");
+  }
+  return train.stop_name || null;
+}
+
+let stationJogOffsetsByTrainId = new Map();
+
+function recomputeStationJogOffsets() {
+  const byStation = new Map();
+
+  for (const train of trainStateById.values()) {
+    if (!isAtStation(train)) {
+      continue;
+    }
+    const stationKey = stationGroupKey(train);
+    if (!stationKey) {
+      continue;
+    }
+    if (!byStation.has(stationKey)) {
+      byStation.set(stationKey, []);
+    }
+    byStation.get(stationKey).push(train.train_id);
+  }
+
+  const offsets = new Map();
+  const step = iconPixelSize() * 0.12;
+
+  for (const trainIds of byStation.values()) {
+    if (trainIds.length < 2) {
+      continue;
+    }
+    trainIds.sort();
+    for (let index = 0; index < trainIds.length; index += 1) {
+      offsets.set(trainIds[index], { x: index * step, y: index * step });
+    }
+  }
+
+  stationJogOffsetsByTrainId = offsets;
+}
+
+function markerDisplayLatLng(train, nowMs = Date.now()) {
+  const base = markerLatLng(train, nowMs);
+  const offset = stationJogOffsetsByTrainId.get(train.train_id);
+  return applyPixelOffset(base, offset);
 }
 
 function emojiStatusHtml(train) {
@@ -225,8 +294,22 @@ function syncMarkers(trains) {
   for (const train of trains) {
     seen.add(train.train_id);
     trainStateById.set(train.train_id, train);
+  }
 
-    const latLng = markerLatLng(train);
+  for (const [trainId, marker] of markersByTrainId) {
+    if (!seen.has(trainId)) {
+      hideEmojiNotice(trainId);
+      map.removeLayer(marker);
+      markersByTrainId.delete(trainId);
+      trainStateById.delete(trainId);
+      lastEmojiByTrainId.delete(trainId);
+    }
+  }
+
+  recomputeStationJogOffsets();
+
+  for (const train of trains) {
+    const latLng = markerDisplayLatLng(train);
     let marker = markersByTrainId.get(train.train_id);
 
     if (!marker) {
@@ -251,16 +334,6 @@ function syncMarkers(trains) {
     );
   }
 
-  for (const [trainId, marker] of markersByTrainId) {
-    if (!seen.has(trainId)) {
-      hideEmojiNotice(trainId);
-      map.removeLayer(marker);
-      markersByTrainId.delete(trainId);
-      trainStateById.delete(trainId);
-      lastEmojiByTrainId.delete(trainId);
-    }
-  }
-
   lastTrainCount = trains.length;
 }
 
@@ -273,7 +346,7 @@ function animateMarkers() {
   for (const [trainId, marker] of markersByTrainId) {
     const train = trainStateById.get(trainId);
     if (!train) continue;
-    marker.setLatLng(markerLatLng(train));
+    marker.setLatLng(markerDisplayLatLng(train));
   }
 
   animationFrameId = requestAnimationFrame(animateMarkers);
