@@ -143,6 +143,7 @@ def enrich_map_trains(
     trains: list[dict],
     departed_from: dict[str, str],
     day_punctuality: dict[str, dict] | None = None,
+    consist_ids_by_train_id: dict[str, int] | None = None,
 ) -> list[dict]:
     enriched: list[dict] = []
     for train in trains:
@@ -156,4 +157,4 @@ def enrich_map_trains(
         {**train, "train_label": format_train_display_name(train.get("train_id"))}
         for train in enrich_train_in_front_also_late(enriched)
     ]
-    return apply_day_punctuality(labeled, day_punctuality or {})
+    return apply_day_punctuality(labeled, day_punctuality or {}, consist_ids_by_train_id)

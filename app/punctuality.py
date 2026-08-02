@@ -83,13 +83,16 @@ def summarize_day_punctuality(samples: list[dict]) -> dict:
 def apply_day_punctuality(
     trains: list[dict],
     stats_by_train_id: dict[str, dict],
+    consist_ids_by_train_id: dict[str, int] | None = None,
 ) -> list[dict]:
+    consist_ids = consist_ids_by_train_id or {}
     enriched: list[dict] = []
     for train in trains:
         stats = stats_by_train_id.get(train["train_id"], {})
         enriched.append(
             {
                 **train,
+                "feelings_consist_id": consist_ids.get(train["train_id"]),
                 "consistent_day": stats.get("consistent_day", False),
                 "day_on_time_rate": stats.get("day_on_time_rate"),
                 "day_on_time_samples": stats.get("day_on_time_samples", 0),

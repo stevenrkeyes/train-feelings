@@ -16,6 +16,12 @@ from app.config import (
     SESSION_MAX_AGE_SECONDS,
 )
 from app.punctuality import summarize_day_punctuality, today_bounds_utc
+from app.consist import (
+    can_link_terminal_reversal,
+    reversal_link_priority,
+    snapshot_from_row,
+    successor_origin_terminal,
+)
 
 
 def _utc_now() -> datetime:
@@ -119,6 +125,54 @@ async def init_db(db_path: Path | None = None) -> None:
         )
         await db.commit()
         await _migrate_observations_table(db)
+        await _init_consist_tables(db)
+
+
+async def _init_consist_tables(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='feelings_consists'"
+    )
+    if await cursor.fetchone():
+        cursor = await db.execute("PRAGMA table_info(feelings_consists)")
+        columns = await cursor.fetchall()
+        id_type = next((row[2] for row in columns if row[1] == "feelings_consist_id"), None)
+        if id_type and id_type.upper() != "INTEGER":
+            await db.executescript(
+                """
+                DROP TABLE IF EXISTS feelings_consist_trains;
+                DROP TABLE IF EXISTS feelings_consists;
+                """
+            )
+
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS feelings_consists (
+            feelings_consist_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id TEXT,
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS feelings_consist_trains (
+            train_id TEXT PRIMARY KEY,
+            feelings_consist_id INTEGER NOT NULL,
+            route_id TEXT,
+            direction TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            last_end_terminal TEXT,
+            predecessor_train_id TEXT,
+            link_reason TEXT,
+            FOREIGN KEY (feelings_consist_id) REFERENCES feelings_consists(feelings_consist_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_consist_trains_consist
+            ON feelings_consist_trains(feelings_consist_id);
+        CREATE INDEX IF NOT EXISTS idx_consist_trains_terminal
+            ON feelings_consist_trains(route_id, last_end_terminal, last_seen_at);
+        """
+    )
+    await db.commit()
 
 
 async def _migrate_observations_table(db: aiosqlite.Connection) -> None:
@@ -238,6 +292,272 @@ async def record_observations(
             values,
         )
         await db.commit()
+
+    await update_consists_from_poll(rows, collected_at)
+
+
+def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
+    by_train: dict[str, dict] = {}
+    for row in rows:
+        train_id = row["train_id"]
+        if train_id not in by_train:
+            by_train[train_id] = row
+    return [snapshot_from_row(row) for row in by_train.values()]
+
+
+async def update_consists_from_poll(rows: list[dict], collected_at: str) -> None:
+    snapshots = _snapshots_from_rows(rows)
+    if not snapshots:
+        return
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        new_snapshots: list[dict] = []
+        existing_snapshots: list[tuple[dict, aiosqlite.Row]] = []
+
+        for snapshot in snapshots:
+            train_id = snapshot["train_id"]
+            cursor = await db.execute(
+                "SELECT * FROM feelings_consist_trains WHERE train_id = ?",
+                (train_id,),
+            )
+            existing = await cursor.fetchone()
+            if existing is None:
+                new_snapshots.append(snapshot)
+            else:
+                existing_snapshots.append((snapshot, existing))
+
+        claimed_predecessors = await _predecessors_with_successors(db)
+        link_assignments = await _assign_reversal_links(
+            db,
+            new_snapshots,
+            collected_at,
+            claimed_predecessors,
+        )
+
+        for snapshot in new_snapshots:
+            train_id = snapshot["train_id"]
+            consist_id, predecessor_id = link_assignments[train_id]
+            await db.execute(
+                """
+                INSERT INTO feelings_consist_trains (
+                    train_id, feelings_consist_id, route_id, direction,
+                    first_seen_at, last_seen_at, last_end_terminal,
+                    predecessor_train_id, link_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    train_id,
+                    consist_id,
+                    snapshot.get("route_id"),
+                    snapshot.get("direction"),
+                    collected_at,
+                    collected_at,
+                    snapshot.get("end_terminal"),
+                    predecessor_id,
+                    "terminal_reversal" if predecessor_id else None,
+                ),
+            )
+            await db.execute(
+                """
+                UPDATE feelings_consists
+                SET last_seen_at = ?
+                WHERE feelings_consist_id = ?
+                """,
+                (collected_at, consist_id),
+            )
+
+        for snapshot, existing in existing_snapshots:
+            train_id = snapshot["train_id"]
+            end_terminal = snapshot.get("end_terminal") or existing["last_end_terminal"]
+            await db.execute(
+                """
+                UPDATE feelings_consist_trains
+                SET route_id = ?, direction = ?, last_seen_at = ?, last_end_terminal = ?
+                WHERE train_id = ?
+                """,
+                (
+                    snapshot.get("route_id"),
+                    snapshot.get("direction"),
+                    collected_at,
+                    end_terminal,
+                    train_id,
+                ),
+            )
+            await db.execute(
+                """
+                UPDATE feelings_consists
+                SET last_seen_at = ?
+                WHERE feelings_consist_id = ?
+                """,
+                (collected_at, existing["feelings_consist_id"]),
+            )
+
+        await db.commit()
+
+
+async def _create_feelings_consist(
+    db: aiosqlite.Connection,
+    route_id: str | None,
+    collected_at: str,
+) -> int:
+    cursor = await db.execute(
+        """
+        INSERT INTO feelings_consists (route_id, started_at, last_seen_at)
+        VALUES (?, ?, ?)
+        """,
+        (route_id, collected_at, collected_at),
+    )
+    return int(cursor.lastrowid)
+
+
+async def _predecessors_with_successors(db: aiosqlite.Connection) -> set[str]:
+    cursor = await db.execute(
+        """
+        SELECT DISTINCT predecessor_train_id
+        FROM feelings_consist_trains
+        WHERE predecessor_train_id IS NOT NULL
+        """
+    )
+    return {row[0] for row in await cursor.fetchall()}
+
+
+async def _find_reversal_predecessor_candidates(
+    db: aiosqlite.Connection,
+    *,
+    direction: str | None,
+    origin_terminal: str | None,
+    successor_first_seen_at: str,
+    exclude_train_id: str,
+) -> list[dict]:
+    if not direction or not origin_terminal:
+        return []
+
+    cursor = await db.execute(
+        """
+        SELECT train_id, feelings_consist_id, route_id, direction,
+               last_seen_at, last_end_terminal
+        FROM feelings_consist_trains
+        WHERE direction != ?
+          AND last_end_terminal = ?
+          AND last_seen_at < ?
+          AND train_id != ?
+        ORDER BY last_seen_at DESC
+        LIMIT 50
+        """,
+        (direction, origin_terminal, successor_first_seen_at, exclude_train_id),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def _assign_reversal_links(
+    db: aiosqlite.Connection,
+    new_snapshots: list[dict],
+    collected_at: str,
+    claimed_predecessors: set[str],
+) -> dict[str, tuple[int, str | None]]:
+    """Assign at most one successor per predecessor; prefer same route, then shorter gap."""
+    candidates: list[tuple[tuple[int, float], str, dict]] = []
+
+    for snapshot in new_snapshots:
+        origin_terminal = successor_origin_terminal(snapshot.get("parsed"))
+        if not origin_terminal:
+            continue
+
+        for predecessor in await _find_reversal_predecessor_candidates(
+            db,
+            direction=snapshot.get("direction"),
+            origin_terminal=origin_terminal,
+            successor_first_seen_at=collected_at,
+            exclude_train_id=snapshot["train_id"],
+        ):
+            if not can_link_terminal_reversal(
+                predecessor_last_seen_at=predecessor["last_seen_at"],
+                successor_first_seen_at=collected_at,
+                predecessor_route_id=predecessor.get("route_id"),
+                successor_route_id=snapshot.get("route_id"),
+                predecessor_direction=predecessor.get("direction"),
+                successor_direction=snapshot.get("direction"),
+                predecessor_end_terminal=predecessor.get("last_end_terminal"),
+                successor_origin_terminal=origin_terminal,
+            ):
+                continue
+
+            priority = reversal_link_priority(
+                predecessor_route_id=predecessor.get("route_id"),
+                successor_route_id=snapshot.get("route_id"),
+                predecessor_last_seen_at=predecessor["last_seen_at"],
+                successor_first_seen_at=collected_at,
+            )
+            candidates.append((priority, snapshot["train_id"], predecessor))
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+
+    assignments: dict[str, tuple[int, str | None]] = {}
+    assigned_successors: set[str] = set()
+
+    for _priority, successor_id, predecessor in candidates:
+        predecessor_id = predecessor["train_id"]
+        if successor_id in assigned_successors:
+            continue
+        if predecessor_id in claimed_predecessors:
+            continue
+
+        assignments[successor_id] = (
+            int(predecessor["feelings_consist_id"]),
+            predecessor_id,
+        )
+        assigned_successors.add(successor_id)
+        claimed_predecessors.add(predecessor_id)
+
+    for snapshot in new_snapshots:
+        train_id = snapshot["train_id"]
+        if train_id in assignments:
+            continue
+        consist_id = await _create_feelings_consist(db, snapshot.get("route_id"), collected_at)
+        assignments[train_id] = (consist_id, None)
+
+    return assignments
+
+
+async def get_feelings_consist_ids(train_ids: list[str]) -> dict[str, int]:
+    if not train_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(train_ids))
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT train_id, feelings_consist_id
+            FROM feelings_consist_trains
+            WHERE train_id IN ({placeholders})
+            """,
+            train_ids,
+        )
+        return {row["train_id"]: int(row["feelings_consist_id"]) for row in await cursor.fetchall()}
+
+
+async def get_train_ids_for_consists(consist_ids: list[int]) -> dict[int, list[str]]:
+    if not consist_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(consist_ids))
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT feelings_consist_id, train_id
+            FROM feelings_consist_trains
+            WHERE feelings_consist_id IN ({placeholders})
+            ORDER BY first_seen_at
+            """,
+            consist_ids,
+        )
+        grouped: dict[int, list[str]] = defaultdict(list)
+        for row in await cursor.fetchall():
+            grouped[int(row["feelings_consist_id"])].append(row["train_id"])
+        return grouped
 
 
 async def update_feed_health(
@@ -403,9 +723,23 @@ async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
     if not train_ids:
         return {}
 
+    consist_by_train = await get_feelings_consist_ids(train_ids)
+    unique_consist_ids = list(dict.fromkeys(consist_by_train.values()))
+    members_by_consist = await get_train_ids_for_consists(unique_consist_ids)
+
+    all_train_ids = list(
+        dict.fromkeys(
+            train_id
+            for member_ids in members_by_consist.values()
+            for train_id in member_ids
+        )
+    )
+    if not all_train_ids:
+        all_train_ids = train_ids
+
     day_start, day_end = today_bounds_utc()
-    placeholders = ",".join("?" * len(train_ids))
-    params = [*train_ids, _iso(day_start), _iso(day_end)]
+    placeholders = ",".join("?" * len(all_train_ids))
+    params = [*all_train_ids, _iso(day_start), _iso(day_end)]
 
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -431,10 +765,22 @@ async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
     for row in rows:
         samples_by_train[row["train_id"]].append(row)
 
-    return {
-        train_id: summarize_day_punctuality(samples_by_train.get(train_id, []))
-        for train_id in train_ids
-    }
+    stats_by_consist: dict[int, dict] = {}
+    for consist_id, member_ids in members_by_consist.items():
+        merged: list[dict] = []
+        for member_id in member_ids:
+            merged.extend(samples_by_train.get(member_id, []))
+        merged.sort(key=lambda sample: sample.get("collected_at") or "")
+        stats_by_consist[consist_id] = summarize_day_punctuality(merged)
+
+    result: dict[str, dict] = {}
+    for train_id in train_ids:
+        consist_id = consist_by_train.get(train_id)
+        if consist_id and consist_id in stats_by_consist:
+            result[train_id] = stats_by_consist[consist_id]
+        else:
+            result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
+    return result
 
 
 async def get_feed_health() -> list[dict]:
