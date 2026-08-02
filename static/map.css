@@ -147,6 +147,7 @@ body {
   margin-top: 0.35rem;
   font-size: 0.9rem;
   color: #2d6a4f;
+  font-weight: 600;
 }
 
 .train-popup__mode {
@@ -159,6 +160,7 @@ body {
   margin-top: 0.35rem;
   font-size: 0.82rem;
   color: #4a5d78;
+  font-weight: 600;
 }
 
 .train-popup__station {

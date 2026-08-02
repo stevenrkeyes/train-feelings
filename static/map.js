@@ -437,7 +437,7 @@ function scheduleStatusLine(train, maxDelay, minDelay) {
     return `<div class="train-popup__old-friend">Saw an old friend (${escapeHtml(train.old_friend_train_label)})</div>`;
   }
   if (train.snoozing_at_station && train.station_dwell_minutes != null) {
-    return `<div class="train-popup__snoozing">Snoozing at the station (${train.station_dwell_minutes} min)</div>`;
+    return `<div class="train-popup__snoozing">Snoozing (${train.station_dwell_minutes} min)</div>`;
   }
   if (train.is_late) {
     if (train.train_in_front_also_late && train.train_in_front_id) {
