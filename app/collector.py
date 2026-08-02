@@ -63,6 +63,9 @@ def _extract_rows(feed_id: str, feed: NYCTFeed) -> list[dict]:
         last_position_update = _iso_or_none(trip.last_position_update) if trip.underway else None
         next_stop_arrival_time = _iso_or_none(stop_updates[0].arrival) if stop_updates else None
         next_stop_departure_time = _iso_or_none(stop_updates[0].departure) if stop_updates else None
+        current_stop_sequence = trip.current_stop_sequence_index if trip.underway else None
+        shape_id = trip.shape_id
+        direction = trip.direction
 
         for stop_update in stop_updates:
             arrival_delay, departure_delay = _delays_from_stop_update(stop_update)
@@ -84,6 +87,9 @@ def _extract_rows(feed_id: str, feed: NYCTFeed) -> list[dict]:
                     "next_stop_departure_time": next_stop_departure_time,
                     "location_stop_id": location_stop_id,
                     "location_status": location_status,
+                    "shape_id": shape_id,
+                    "direction": direction,
+                    "current_stop_sequence": current_stop_sequence,
                     "scheduled_track": stop_update.scheduled_track,
                     "actual_track": stop_update.actual_track,
                 }

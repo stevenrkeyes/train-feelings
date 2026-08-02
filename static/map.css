@@ -97,6 +97,13 @@ body {
   font-weight: 600;
 }
 
+.train-popup__train-in-front {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 .train-popup__mode {
   margin-top: 0.35rem;
   font-size: 0.82rem;

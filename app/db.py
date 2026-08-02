@@ -87,6 +87,9 @@ async def init_db(db_path: Path | None = None) -> None:
                 last_position_update TEXT,
                 next_stop_arrival_time TEXT,
                 next_stop_departure_time TEXT,
+                shape_id TEXT,
+                direction TEXT,
+                current_stop_sequence INTEGER,
                 feed_id TEXT NOT NULL,
                 feed_timestamp TEXT NOT NULL,
                 collected_at TEXT NOT NULL
@@ -131,6 +134,9 @@ async def _migrate_observations_table(db: aiosqlite.Connection) -> None:
         "last_position_update": "TEXT",
         "next_stop_arrival_time": "TEXT",
         "next_stop_departure_time": "TEXT",
+        "shape_id": "TEXT",
+        "direction": "TEXT",
+        "current_stop_sequence": "INTEGER",
     }
     for name, col_type in additions.items():
         if name not in columns:
@@ -204,6 +210,9 @@ async def record_observations(
             row.get("last_position_update"),
             row.get("next_stop_arrival_time"),
             row.get("next_stop_departure_time"),
+            row.get("shape_id"),
+            row.get("direction"),
+            row.get("current_stop_sequence"),
             feed_id,
             feed_ts,
             collected_at,
@@ -220,8 +229,9 @@ async def record_observations(
                 scheduled_track, actual_track, arrival_delay, departure_delay,
                 trip_arrival_delay, trip_departure_delay, last_position_update,
                 next_stop_arrival_time, next_stop_departure_time,
+                shape_id, direction, current_stop_sequence,
                 feed_id, feed_timestamp, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -367,6 +377,9 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
                 o.last_position_update,
                 o.next_stop_arrival_time,
                 o.next_stop_departure_time,
+                o.shape_id,
+                o.direction,
+                o.current_stop_sequence,
                 o.collected_at
             FROM observations o
             INNER JOIN (

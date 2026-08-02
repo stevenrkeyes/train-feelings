@@ -54,9 +54,29 @@ function zoomIconScale() {
   return ZOOM_SIZE_GROWTH ** (map.getZoom() - NYC_ZOOM);
 }
 
-function trainIcon(isLate) {
-  const emoji = isLate ? "😞" : "🚆";
-  const label = isLate ? "late train" : "train";
+function trainEmoji(train) {
+  if (!train.is_late) {
+    return "🚆";
+  }
+  if (train.train_in_front_also_late) {
+    return "😡";
+  }
+  return "😞";
+}
+
+function trainIconLabel(train) {
+  if (!train.is_late) {
+    return "train";
+  }
+  if (train.train_in_front_also_late) {
+    return "delayed by train in front";
+  }
+  return "late train";
+}
+
+function trainIcon(train) {
+  const emoji = trainEmoji(train);
+  const label = trainIconLabel(train);
   const scale = zoomIconScale();
   const size = Math.round(BASE_ICON_SIZE * scale);
   const fontSize = BASE_FONT_REM * scale;
@@ -72,7 +92,7 @@ function updateMarkerIcons() {
   for (const [trainId, marker] of markersByTrainId) {
     const train = trainStateById.get(trainId);
     if (train) {
-      marker.setIcon(trainIcon(train.is_late));
+      marker.setIcon(trainIcon(train));
     }
   }
 }
@@ -121,12 +141,12 @@ function syncMarkers(trains) {
     let marker = markersByTrainId.get(train.train_id);
 
     if (!marker) {
-      marker = L.marker(latLng, { icon: trainIcon(train.is_late) });
+      marker = L.marker(latLng, { icon: trainIcon(train) });
       marker.addTo(map);
       markersByTrainId.set(train.train_id, marker);
     } else {
       marker.setLatLng(latLng);
-      marker.setIcon(trainIcon(train.is_late));
+      marker.setIcon(trainIcon(train));
     }
 
     marker.bindPopup(
@@ -224,7 +244,12 @@ function trainPopupHtml(train) {
       ? `<div class="train-popup__late">${maxDelay}s behind schedule</div>`
       : "";
 
-  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${stationLine}${departureLine}${modeLine}${lateLine}</div>`;
+  const trainInFrontLine =
+    train.train_in_front_also_late && train.train_in_front_id
+      ? `<div class="train-popup__train-in-front">Train in front also late (<a class="train-popup__link" href="${trainPageUrl(train.train_in_front_id)}">${escapeHtml(train.train_in_front_id)}</a>${train.train_in_front_stops_ahead != null ? `, ${train.train_in_front_stops_ahead} stop${train.train_in_front_stops_ahead === 1 ? "" : "s"} ahead` : ""})</div>`
+      : "";
+
+  return `<div class="train-popup"><strong>Train ID</strong><br><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(train.train_id)}</a>${stationLine}${departureLine}${modeLine}${lateLine}${trainInFrontLine}</div>`;
 }
 
 async function loadTrains() {
