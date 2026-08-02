@@ -53,8 +53,12 @@ async function loadShapes() {
 
 const markersByTrainId = new Map();
 const trainStateById = new Map();
+const lastEmojiByTrainId = new Map();
+const emojiNoticeByTrainId = new Map();
 let animationFrameId = null;
 let lastTrainCount = 0;
+
+const EMOJI_NOTICE_MS = 30000;
 
 function zoomIconScale() {
   return ZOOM_SIZE_GROWTH ** (map.getZoom() - NYC_ZOOM);
@@ -160,6 +164,61 @@ function markerLatLng(train, nowMs = Date.now()) {
   return [train.to_lat, train.to_lon];
 }
 
+function emojiStatusHtml(train) {
+  const delays = [train.trip_arrival_delay, train.trip_departure_delay].filter((value) => value != null);
+  const maxDelay = delays.length ? Math.max(...delays) : null;
+  const minDelay = delays.length ? Math.min(...delays) : null;
+  const line = scheduleStatusLine(train, maxDelay, minDelay);
+  return line || null;
+}
+
+function hideEmojiNotice(trainId) {
+  const notice = emojiNoticeByTrainId.get(trainId);
+  if (!notice) return;
+  clearTimeout(notice.timeoutId);
+  const marker = markersByTrainId.get(trainId);
+  if (marker?.getTooltip()) {
+    marker.unbindTooltip();
+  }
+  emojiNoticeByTrainId.delete(trainId);
+}
+
+function showEmojiNotice(trainId, train) {
+  const statusHtml = emojiStatusHtml(train);
+  if (!statusHtml) {
+    hideEmojiNotice(trainId);
+    return;
+  }
+
+  const marker = markersByTrainId.get(trainId);
+  if (!marker) return;
+
+  let notice = emojiNoticeByTrainId.get(trainId);
+  if (!notice) {
+    notice = { timeoutId: null };
+    emojiNoticeByTrainId.set(trainId, notice);
+  } else {
+    clearTimeout(notice.timeoutId);
+  }
+
+  const content = `<div class="train-popup">${statusHtml}</div>`;
+  if (marker.getTooltip()) {
+    marker.setTooltipContent(content);
+  } else {
+    marker
+      .bindTooltip(content, {
+        permanent: true,
+        direction: "top",
+        className: "train-emoji-notice",
+        offset: [0, -8],
+        interactive: false,
+      })
+      .openTooltip();
+  }
+
+  notice.timeoutId = setTimeout(() => hideEmojiNotice(trainId), EMOJI_NOTICE_MS);
+}
+
 function syncMarkers(trains) {
   const seen = new Set();
 
@@ -179,6 +238,13 @@ function syncMarkers(trains) {
       marker.setIcon(trainIcon(train));
     }
 
+    const newEmoji = trainEmoji(train);
+    const prevEmoji = lastEmojiByTrainId.get(train.train_id);
+    if (prevEmoji !== undefined && prevEmoji !== newEmoji) {
+      showEmojiNotice(train.train_id, train);
+    }
+    lastEmojiByTrainId.set(train.train_id, newEmoji);
+
     marker.bindPopup(
       () => trainPopupHtml(trainStateById.get(train.train_id) || train),
       { closeButton: true, autoClose: true, closeOnClick: true }
@@ -187,9 +253,11 @@ function syncMarkers(trains) {
 
   for (const [trainId, marker] of markersByTrainId) {
     if (!seen.has(trainId)) {
+      hideEmojiNotice(trainId);
       map.removeLayer(marker);
       markersByTrainId.delete(trainId);
       trainStateById.delete(trainId);
+      lastEmojiByTrainId.delete(trainId);
     }
   }
 

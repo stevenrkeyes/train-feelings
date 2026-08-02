@@ -173,3 +173,25 @@ body {
   color: #4a5d78;
 }
 
+.train-emoji-notice.leaflet-tooltip {
+  background: #fff;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.4);
+  color: #1a2332;
+  padding: 0;
+  pointer-events: none;
+}
+
+.train-emoji-notice.leaflet-tooltip-top::before {
+  border-top-color: #fff;
+}
+
+.train-emoji-notice .leaflet-tooltip-content {
+  margin: 10px 12px;
+}
+
+.train-emoji-notice .train-popup > :first-child {
+  margin-top: 0;
+}
+
