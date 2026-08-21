@@ -16,7 +16,6 @@ ARRIVAL_WINDOW_MINUTES = int(os.environ.get("ARRIVAL_WINDOW_MINUTES", "10"))
 DATA_RETENTION_HOURS = int(os.environ.get("DATA_RETENTION_HOURS", "2"))
 
 SESSION_COOKIE_NAME = "tf_session"
-SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-change-me-in-production")
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 
 FEED_STALE_THRESHOLD_SECONDS = int(os.environ.get("FEED_STALE_THRESHOLD_SECONDS", "90"))

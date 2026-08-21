@@ -87,7 +87,6 @@ async def init_db(db_path: Path | None = None) -> None:
 
     async with _db_connect(path) as db:
         await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("DROP TABLE IF EXISTS observations")
         await db.executescript(
             """
             CREATE TABLE IF NOT EXISTS train_state (
