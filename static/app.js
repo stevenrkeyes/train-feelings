@@ -1,6 +1,5 @@
 const trainsEl = document.getElementById("trains");
 const statusEl = document.getElementById("status");
-const windowMinutesEl = document.getElementById("window-minutes");
 
 const REFRESH_MS = 15000;
 const HISTORY_LIMIT = 30;
@@ -52,7 +51,7 @@ function renderHistoryItem(item) {
         : null,
       "actual"
     ),
-    renderField("Recorded at", formatTime(item.collected_at), "meta"),
+    renderField("Polled at", formatTime(item.collected_at), "meta"),
   ].join("");
 
   return `
@@ -70,12 +69,12 @@ function renderTrainCard(train) {
   const isOpen = expandedTrains.has(train.train_id);
   const openAttr = isOpen ? " open" : "";
   const summary = history.length
-    ? `${history.length} past event${history.length === 1 ? "" : "s"} (last ${windowMinutesEl.textContent} min)`
-    : "No past events in window";
+    ? `${history.length} upcoming stop${history.length === 1 ? "" : "s"}`
+    : "No upcoming stops";
 
   const historyHtml = history.length
     ? history.map(renderHistoryItem).join("")
-    : '<li class="history-item history-item--empty">No stop updates recorded yet.</li>';
+    : '<li class="history-item history-item--empty">No stop updates in the current poll.</li>';
 
   return `
     <article class="train-card" data-train-id="${escapeHtml(train.train_id)}">
@@ -131,7 +130,6 @@ function focusTrainCard(trainId) {
 }
 
 function renderTrains(data) {
-  windowMinutesEl.textContent = data.window_minutes;
   const trains = data.trains || [];
 
   if (!trains.length) {

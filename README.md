@@ -5,9 +5,9 @@ Even a subway train has feelings.
 ## What it does
 
 - Polls all 8 MTA subway GTFS-RT feeds every 30 seconds
-- Stores stop-level arrival/departure predictions per train
+- Upserts one current row per train (`train_state`) with map-ready derived fields
 - Serves a same-origin web UI (session cookie required for API access)
-- Lists trains seen in the last 10 minutes with their recent stop updates
+- Lists currently tracked trains with their upcoming stop predictions
 
 ## Local development
 

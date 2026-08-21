@@ -152,14 +152,26 @@ async def map_trains(request: Request):
     locations = await db.get_cached_train_locations()
     t_locations = time.monotonic()
 
-    departed_from = await db.get_departed_from_stops(locations)
+    departed_from = {
+        train["train_id"]: train["departed_from_stop_id"]
+        for train in locations
+        if train.get("departed_from_stop_id")
+    }
     t_departed = time.monotonic()
 
     train_ids = [train["train_id"] for train in locations]
-    day_punctuality = await db.get_train_day_punctuality(train_ids)
+    day_punctuality = {
+        train["train_id"]: db.punctuality_from_train_state(train)
+        for train in locations
+    }
     t_punctuality = time.monotonic()
 
-    consist_ids, old_friends, dwell_since = await db.get_map_enrichment(train_ids, locations)
+    consist_ids, old_friends = await db.get_map_enrichment(train_ids)
+    dwell_since = {
+        train["train_id"]: train["dwell_since"]
+        for train in locations
+        if train.get("dwell_since")
+    }
     t_enrichment = time.monotonic()
 
     trains = enrich_map_trains(

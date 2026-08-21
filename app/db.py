@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 from collections import defaultdict
@@ -14,12 +15,16 @@ from app.config import (
     ARRIVAL_WINDOW_MINUTES,
     DATABASE_PATH,
     DATA_RETENTION_HOURS,
-    EVENT_FUTURE_MARGIN_SECONDS,
     HISTORY_LIMIT,
     SESSION_MAX_AGE_SECONDS,
-    SNORING_STATION_MINUTES,
 )
-from app.punctuality import summarize_day_punctuality, today_bounds_utc
+from app.punctuality import (
+    empty_day_punctuality,
+    ny_calendar_date,
+    punctuality_bucket,
+    punctuality_from_counters,
+    score_delay_sample,
+)
 from app.consist import (
     can_link_terminal_reversal,
     reversal_link_priority,
@@ -35,16 +40,6 @@ from app.old_friends import (
 from app.snoozing import AT_STATION_STATUSES
 
 _db_lock = asyncio.Lock()
-_punctuality_cache: dict[str, dict] | None = None
-_punctuality_cache_at: float | None = None
-_punctuality_refresh_lock = asyncio.Lock()
-PUNCTUALITY_CACHE_SECONDS = 300
-_EMPTY_PUNCTUALITY = {
-    "consistent_day": False,
-    "day_on_time_rate": None,
-    "day_on_time_samples": 0,
-    "day_tracking_minutes": 0.0,
-}
 
 _locations_cache: list[dict] | None = None
 _locations_cache_at: float | None = None
@@ -71,36 +66,6 @@ def _parse_iso(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
-def _event_time(row: dict) -> datetime | None:
-    """When a stop visit completes; falls back to arrival for destination-only updates."""
-    return _parse_iso(row.get("departure_time") or row.get("arrival_time"))
-
-
-def _is_past_or_current(row: dict, now: datetime, margin: timedelta) -> bool:
-    event_time = _event_time(row)
-    if event_time is None:
-        return False
-    if event_time.tzinfo is None:
-        event_time = event_time.replace(tzinfo=timezone.utc)
-    return event_time <= now + margin
-
-
-def _filter_recent_events(rows: list[dict], limit: int | None = None) -> list[dict]:
-    now = _utc_now()
-    margin = timedelta(seconds=EVENT_FUTURE_MARGIN_SECONDS)
-    cap = limit or HISTORY_LIMIT
-
-    past_or_current = [row for row in rows if _is_past_or_current(row, now, margin)]
-    past_or_current.sort(
-        key=lambda row: (
-            _parse_iso(row.get("collected_at")) or datetime.min.replace(tzinfo=timezone.utc),
-            _event_time(row) or datetime.min.replace(tzinfo=timezone.utc),
-        ),
-        reverse=True,
-    )
-    return past_or_current[:cap]
-
-
 def _db_path(db_path: Path | None = None) -> Path:
     return db_path or DATABASE_PATH
 
@@ -122,42 +87,42 @@ async def init_db(db_path: Path | None = None) -> None:
 
     async with _db_connect(path) as db:
         await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("DROP TABLE IF EXISTS observations")
         await db.executescript(
             """
-            CREATE TABLE IF NOT EXISTS observations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                train_id TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS train_state (
+                train_id TEXT PRIMARY KEY,
                 trip_id TEXT,
                 route_id TEXT,
-                stop_id TEXT NOT NULL,
-                stop_name TEXT,
-                arrival_time TEXT,
-                departure_time TEXT,
+                direction TEXT,
+                shape_id TEXT,
                 location_stop_id TEXT,
                 location_status TEXT,
-                scheduled_track TEXT,
-                actual_track TEXT,
-                arrival_delay INTEGER,
-                departure_delay INTEGER,
+                current_stop_sequence INTEGER,
                 trip_arrival_delay INTEGER,
                 trip_departure_delay INTEGER,
                 last_position_update TEXT,
                 next_stop_arrival_time TEXT,
                 next_stop_departure_time TEXT,
-                shape_id TEXT,
-                direction TEXT,
-                current_stop_sequence INTEGER,
                 feed_id TEXT NOT NULL,
                 feed_timestamp TEXT NOT NULL,
-                collected_at TEXT NOT NULL
+                collected_at TEXT NOT NULL,
+                last_stopped_at TEXT,
+                departed_from_stop_id TEXT,
+                dwell_since TEXT,
+                day_bucket_date TEXT,
+                day_first_seen_at TEXT,
+                last_punctuality_bucket INTEGER,
+                day_on_time_samples INTEGER NOT NULL DEFAULT 0,
+                day_good_samples INTEGER NOT NULL DEFAULT 0,
+                day_on_time_rate REAL,
+                day_tracking_minutes REAL NOT NULL DEFAULT 0,
+                consistent_day INTEGER NOT NULL DEFAULT 0,
+                upcoming_stops_json TEXT
             );
 
-            CREATE INDEX IF NOT EXISTS idx_obs_train_collected
-                ON observations(train_id, collected_at);
-            CREATE INDEX IF NOT EXISTS idx_obs_collected
-                ON observations(collected_at);
-            CREATE INDEX IF NOT EXISTS idx_obs_train_day
-                ON observations(train_id, collected_at);
+            CREATE INDEX IF NOT EXISTS idx_train_state_collected
+                ON train_state(collected_at);
 
             CREATE TABLE IF NOT EXISTS feed_health (
                 feed_id TEXT PRIMARY KEY,
@@ -175,8 +140,6 @@ async def init_db(db_path: Path | None = None) -> None:
             """
         )
         await db.commit()
-        await _migrate_observations_table(db)
-        await _ensure_obs_train_day_index(db)
         await _init_consist_tables(db)
         await _init_old_friend_tables(db)
 
@@ -265,31 +228,6 @@ async def _init_old_friend_tables(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-async def _migrate_observations_table(db: aiosqlite.Connection) -> None:
-    cursor = await db.execute("PRAGMA table_info(observations)")
-    columns = {row[1] for row in await cursor.fetchall()}
-    additions = {
-        "location_stop_id": "TEXT",
-        "location_status": "TEXT",
-        "scheduled_track": "TEXT",
-        "actual_track": "TEXT",
-        "arrival_delay": "INTEGER",
-        "departure_delay": "INTEGER",
-        "trip_arrival_delay": "INTEGER",
-        "trip_departure_delay": "INTEGER",
-        "last_position_update": "TEXT",
-        "next_stop_arrival_time": "TEXT",
-        "next_stop_departure_time": "TEXT",
-        "shape_id": "TEXT",
-        "direction": "TEXT",
-        "current_stop_sequence": "INTEGER",
-    }
-    for name, col_type in additions.items():
-        if name not in columns:
-            await db.execute(f"ALTER TABLE observations ADD COLUMN {name} {col_type}")
-    await db.commit()
-
-
 async def create_session() -> str:
     token = secrets.token_urlsafe(32)
     now = _utc_now()
@@ -326,62 +264,222 @@ async def prune_expired_sessions() -> None:
         await db.commit()
 
 
-async def record_observation_rows(
+def _derive_train_state(existing: dict | None, snapshot: dict, collected_at: str) -> dict:
+    status = snapshot.get("location_status")
+    stop_id = snapshot.get("location_stop_id")
+
+    last_stopped_at = existing.get("last_stopped_at") if existing else None
+    departed_from_stop_id = existing.get("departed_from_stop_id") if existing else None
+    dwell_since = existing.get("dwell_since") if existing else None
+
+    if status == "STOPPED_AT" and stop_id:
+        last_stopped_at = stop_id
+        departed_from_stop_id = None
+    elif status == "IN_TRANSIT_TO":
+        if last_stopped_at and last_stopped_at != stop_id:
+            departed_from_stop_id = last_stopped_at
+        else:
+            departed_from_stop_id = None
+    else:
+        departed_from_stop_id = None
+
+    if status in AT_STATION_STATUSES and stop_id:
+        prev_status = existing.get("location_status") if existing else None
+        prev_stop = existing.get("location_stop_id") if existing else None
+        if (
+            existing
+            and dwell_since
+            and prev_status in AT_STATION_STATUSES
+            and prev_stop == stop_id
+        ):
+            pass
+        else:
+            dwell_since = collected_at
+    else:
+        dwell_since = None
+
+    collected_dt = _parse_iso(collected_at) or _utc_now()
+    today = ny_calendar_date(collected_dt)
+    bucket = punctuality_bucket(collected_dt)
+
+    if existing and existing.get("day_bucket_date") == today:
+        day_bucket_date = today
+        day_first_seen_at = existing.get("day_first_seen_at") or collected_at
+        last_bucket = existing.get("last_punctuality_bucket")
+        day_on_time_samples = int(existing.get("day_on_time_samples") or 0)
+        day_good_samples = int(existing.get("day_good_samples") or 0)
+    else:
+        day_bucket_date = today
+        day_first_seen_at = collected_at
+        last_bucket = None
+        day_on_time_samples = 0
+        day_good_samples = 0
+
+    if last_bucket != bucket:
+        scored = score_delay_sample(
+            snapshot.get("trip_arrival_delay"),
+            snapshot.get("trip_departure_delay"),
+        )
+        if scored is not None:
+            day_on_time_samples += 1
+            if scored:
+                day_good_samples += 1
+            last_bucket = bucket
+
+    stats = punctuality_from_counters(
+        day_first_seen_at=day_first_seen_at,
+        collected_at=collected_at,
+        day_on_time_samples=day_on_time_samples,
+        day_good_samples=day_good_samples,
+    )
+
+    upcoming = snapshot.get("upcoming_stops") or []
+    upcoming_stops_json = json.dumps(upcoming[:HISTORY_LIMIT])
+
+    return {
+        "train_id": snapshot["train_id"],
+        "trip_id": snapshot.get("trip_id"),
+        "route_id": snapshot.get("route_id"),
+        "direction": snapshot.get("direction"),
+        "shape_id": snapshot.get("shape_id"),
+        "location_stop_id": stop_id,
+        "location_status": status,
+        "current_stop_sequence": snapshot.get("current_stop_sequence"),
+        "trip_arrival_delay": snapshot.get("trip_arrival_delay"),
+        "trip_departure_delay": snapshot.get("trip_departure_delay"),
+        "last_position_update": snapshot.get("last_position_update"),
+        "next_stop_arrival_time": snapshot.get("next_stop_arrival_time"),
+        "next_stop_departure_time": snapshot.get("next_stop_departure_time"),
+        "collected_at": collected_at,
+        "last_stopped_at": last_stopped_at,
+        "departed_from_stop_id": departed_from_stop_id,
+        "dwell_since": dwell_since,
+        "day_bucket_date": day_bucket_date,
+        "day_first_seen_at": day_first_seen_at,
+        "last_punctuality_bucket": last_bucket,
+        "day_on_time_samples": day_on_time_samples,
+        "day_good_samples": day_good_samples,
+        "day_on_time_rate": stats["day_on_time_rate"],
+        "day_tracking_minutes": stats["day_tracking_minutes"],
+        "consistent_day": 1 if stats["consistent_day"] else 0,
+        "upcoming_stops_json": upcoming_stops_json,
+    }
+
+
+async def upsert_train_states(
     feed_id: str,
     feed_timestamp: datetime,
-    rows: list[dict],
+    snapshots: list[dict],
 ) -> None:
-    if not rows:
+    if not snapshots:
         return
 
     collected_at = _iso(_utc_now())
     feed_ts = _iso(feed_timestamp)
-    values = [
-        (
-            row["train_id"],
-            row.get("trip_id"),
-            row.get("route_id"),
-            row["stop_id"],
-            row.get("stop_name"),
-            row.get("arrival_time"),
-            row.get("departure_time"),
-            row.get("location_stop_id"),
-            row.get("location_status"),
-            row.get("scheduled_track"),
-            row.get("actual_track"),
-            row.get("arrival_delay"),
-            row.get("departure_delay"),
-            row.get("trip_arrival_delay"),
-            row.get("trip_departure_delay"),
-            row.get("last_position_update"),
-            row.get("next_stop_arrival_time"),
-            row.get("next_stop_departure_time"),
-            row.get("shape_id"),
-            row.get("direction"),
-            row.get("current_stop_sequence"),
-            feed_id,
-            feed_ts,
-            collected_at,
-        )
-        for row in rows
-    ]
+    train_ids = [snapshot["train_id"] for snapshot in snapshots]
 
     async with _db_write() as db:
+        db.row_factory = aiosqlite.Row
+        existing_by_id: dict[str, dict] = {}
+        if train_ids:
+            placeholders = ",".join("?" * len(train_ids))
+            cursor = await db.execute(
+                f"SELECT * FROM train_state WHERE train_id IN ({placeholders})",
+                train_ids,
+            )
+            existing_by_id = {row["train_id"]: dict(row) for row in await cursor.fetchall()}
+
+        values = []
+        for snapshot in snapshots:
+            derived = _derive_train_state(
+                existing_by_id.get(snapshot["train_id"]),
+                snapshot,
+                collected_at,
+            )
+            values.append(
+                (
+                    derived["train_id"],
+                    derived["trip_id"],
+                    derived["route_id"],
+                    derived["direction"],
+                    derived["shape_id"],
+                    derived["location_stop_id"],
+                    derived["location_status"],
+                    derived["current_stop_sequence"],
+                    derived["trip_arrival_delay"],
+                    derived["trip_departure_delay"],
+                    derived["last_position_update"],
+                    derived["next_stop_arrival_time"],
+                    derived["next_stop_departure_time"],
+                    feed_id,
+                    feed_ts,
+                    derived["collected_at"],
+                    derived["last_stopped_at"],
+                    derived["departed_from_stop_id"],
+                    derived["dwell_since"],
+                    derived["day_bucket_date"],
+                    derived["day_first_seen_at"],
+                    derived["last_punctuality_bucket"],
+                    derived["day_on_time_samples"],
+                    derived["day_good_samples"],
+                    derived["day_on_time_rate"],
+                    derived["day_tracking_minutes"],
+                    derived["consistent_day"],
+                    derived["upcoming_stops_json"],
+                )
+            )
+
         await db.executemany(
             """
-            INSERT INTO observations (
-                train_id, trip_id, route_id, stop_id, stop_name,
-                arrival_time, departure_time, location_stop_id, location_status,
-                scheduled_track, actual_track, arrival_delay, departure_delay,
+            INSERT INTO train_state (
+                train_id, trip_id, route_id, direction, shape_id,
+                location_stop_id, location_status, current_stop_sequence,
                 trip_arrival_delay, trip_departure_delay, last_position_update,
                 next_stop_arrival_time, next_stop_departure_time,
-                shape_id, direction, current_stop_sequence,
-                feed_id, feed_timestamp, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                feed_id, feed_timestamp, collected_at,
+                last_stopped_at, departed_from_stop_id, dwell_since,
+                day_bucket_date, day_first_seen_at, last_punctuality_bucket,
+                day_on_time_samples, day_good_samples, day_on_time_rate,
+                day_tracking_minutes, consistent_day, upcoming_stops_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(train_id) DO UPDATE SET
+                trip_id = excluded.trip_id,
+                route_id = excluded.route_id,
+                direction = excluded.direction,
+                shape_id = excluded.shape_id,
+                location_stop_id = excluded.location_stop_id,
+                location_status = excluded.location_status,
+                current_stop_sequence = excluded.current_stop_sequence,
+                trip_arrival_delay = excluded.trip_arrival_delay,
+                trip_departure_delay = excluded.trip_departure_delay,
+                last_position_update = excluded.last_position_update,
+                next_stop_arrival_time = excluded.next_stop_arrival_time,
+                next_stop_departure_time = excluded.next_stop_departure_time,
+                feed_id = excluded.feed_id,
+                feed_timestamp = excluded.feed_timestamp,
+                collected_at = excluded.collected_at,
+                last_stopped_at = excluded.last_stopped_at,
+                departed_from_stop_id = excluded.departed_from_stop_id,
+                dwell_since = excluded.dwell_since,
+                day_bucket_date = excluded.day_bucket_date,
+                day_first_seen_at = excluded.day_first_seen_at,
+                last_punctuality_bucket = excluded.last_punctuality_bucket,
+                day_on_time_samples = excluded.day_on_time_samples,
+                day_good_samples = excluded.day_good_samples,
+                day_on_time_rate = excluded.day_on_time_rate,
+                day_tracking_minutes = excluded.day_tracking_minutes,
+                consistent_day = excluded.consistent_day,
+                upcoming_stops_json = excluded.upcoming_stops_json
             """,
             values,
         )
         await db.commit()
+
+    global _locations_cache, _locations_cache_at, _map_enrichment_cache, _map_enrichment_cache_at
+    _locations_cache = None
+    _locations_cache_at = None
+    _map_enrichment_cache = None
+    _map_enrichment_cache_at = None
 
 
 async def finalize_poll_enrichment(rows: list[dict]) -> None:
@@ -390,15 +488,6 @@ async def finalize_poll_enrichment(rows: list[dict]) -> None:
     collected_at = _iso(_utc_now())
     await update_consists_from_poll(rows, collected_at)
     await update_colocations_from_poll(rows, collected_at)
-
-
-async def record_observations(
-    feed_id: str,
-    feed_timestamp: datetime,
-    rows: list[dict],
-) -> None:
-    await record_observation_rows(feed_id, feed_timestamp, rows)
-    await finalize_poll_enrichment(rows)
 
 
 def _snapshots_from_rows(rows: list[dict]) -> list[dict]:
@@ -828,33 +917,16 @@ async def update_feed_health(
         await db.commit()
 
 
-async def prune_old_data(batch_size: int = 5000) -> int:
+async def prune_stale_train_states() -> int:
     cutoff = _iso(_utc_now() - timedelta(hours=DATA_RETENTION_HOURS))
-    total_deleted = 0
-
-    while True:
-        async with _db_write() as db:
-            cursor = await db.execute(
-                """
-                DELETE FROM observations
-                WHERE id IN (
-                    SELECT id FROM observations
-                    WHERE collected_at < ?
-                    LIMIT ?
-                )
-                """,
-                (cutoff, batch_size),
-            )
-            deleted = cursor.rowcount
-            await db.commit()
-
-        if deleted <= 0:
-            break
-        total_deleted += deleted
-        if deleted < batch_size:
-            break
-
-    return total_deleted
+    async with _db_write() as db:
+        cursor = await db.execute(
+            "DELETE FROM train_state WHERE collected_at < ?",
+            (cutoff,),
+        )
+        deleted = cursor.rowcount
+        await db.commit()
+    return deleted
 
 
 async def reclaim_database_space() -> None:
@@ -878,142 +950,41 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
         cursor = await db.execute(
             """
             SELECT
-                train_id,
-                MAX(route_id) AS route_id,
-                MAX(trip_id) AS trip_id,
-                COUNT(*) AS observation_count
-            FROM observations
+                train_id, route_id, trip_id, location_stop_id, location_status,
+                collected_at, upcoming_stops_json
+            FROM train_state
             WHERE collected_at >= ?
-            GROUP BY train_id
+              AND location_stop_id IS NOT NULL
+              AND location_stop_id != ''
             ORDER BY train_id
             """,
             (cutoff,),
         )
-        trains = [dict(row) for row in await cursor.fetchall()]
-
         result = []
-        for train in trains:
-            cursor = await db.execute(
-                """
-                SELECT
-                    stop_id, stop_name, arrival_time, departure_time,
-                    location_stop_id, location_status,
-                    scheduled_track, actual_track, collected_at
-                FROM observations
-                WHERE train_id = ? AND collected_at >= ?
-                ORDER BY collected_at DESC, arrival_time DESC
-                LIMIT 300
-                """,
-                (train["train_id"], cutoff),
-            )
-            arrivals = _filter_recent_events([dict(row) for row in await cursor.fetchall()])
-            if arrivals:
-                result.append({**train, "arrivals": arrivals})
-
-    return result
-
-
-async def get_departed_from_stops(
-    trains: list[dict],
-    window_minutes: int | None = None,
-) -> dict[str, str]:
-    if not trains:
-        return {}
-
-    in_transit = {
-        train["train_id"]: train.get("location_stop_id")
-        for train in trains
-        if train.get("location_status") == "IN_TRANSIT_TO" and train.get("location_stop_id")
-    }
-    if not in_transit:
-        return {}
-
-    window = window_minutes or ARRIVAL_WINDOW_MINUTES
-    cutoff = _iso(_utc_now() - timedelta(minutes=window))
-    placeholders = ",".join("?" * len(in_transit))
-
-    async with _db_connect() as db:
-        cursor = await db.execute(
-            f"""
-            SELECT train_id, location_stop_id
-            FROM observations
-            WHERE train_id IN ({placeholders})
-              AND collected_at >= ?
-              AND location_stop_id IS NOT NULL
-              AND location_status = 'STOPPED_AT'
-            ORDER BY train_id, collected_at DESC
-            """,
-            [*in_transit.keys(), cutoff],
-        )
-        rows = await cursor.fetchall()
-
-    departed: dict[str, str] = {}
-    for train_id, stop_id in rows:
-        if train_id in departed:
-            continue
-        current_stop = in_transit[train_id]
-        if stop_id != current_stop:
-            departed[train_id] = stop_id
-
-    return departed
-
-
-async def get_station_dwell_since(
-    trains: list[dict],
-    window_minutes: int | None = None,
-) -> dict[str, str]:
-    """When each train's current continuous stay at its present stop began."""
-    if not trains:
-        return {}
-
-    targets: dict[str, str] = {}
-    for train in trains:
-        status = train.get("location_status")
-        stop_id = train.get("location_stop_id")
-        if status in AT_STATION_STATUSES and stop_id:
-            targets[train["train_id"]] = stop_id
-
-    if not targets:
-        return {}
-
-    window = window_minutes or max(SNORING_STATION_MINUTES + 5, 30)
-    cutoff = _iso(_utc_now() - timedelta(minutes=window))
-    placeholders = ",".join("?" * len(targets))
-    params = [*targets.keys(), cutoff]
-
-    rows_by_train: dict[str, list] = defaultdict(list)
-    async with _db_connect() as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            f"""
-            SELECT train_id, collected_at, location_stop_id, location_status
-            FROM observations
-            WHERE train_id IN ({placeholders})
-              AND collected_at >= ?
-              AND location_stop_id IS NOT NULL
-            ORDER BY train_id, collected_at DESC
-            """,
-            params,
-        )
         for row in await cursor.fetchall():
-            rows_by_train[row["train_id"]].append(row)
-
-    dwell_since: dict[str, str] = {}
-    for train_id, stop_id in targets.items():
-        streak_start: str | None = None
-        for row in rows_by_train.get(train_id, []):
-            if (
-                row["location_stop_id"] == stop_id
-                and row["location_status"] in AT_STATION_STATUSES
-            ):
-                streak_start = row["collected_at"]
-                continue
-            break
-
-        if streak_start:
-            dwell_since[train_id] = streak_start
-
-    return dwell_since
+            try:
+                upcoming = json.loads(row["upcoming_stops_json"] or "[]")
+            except json.JSONDecodeError:
+                upcoming = []
+            arrivals = [
+                {
+                    **stop,
+                    "location_stop_id": row["location_stop_id"],
+                    "location_status": row["location_status"],
+                    "collected_at": row["collected_at"],
+                }
+                for stop in upcoming[:HISTORY_LIMIT]
+            ]
+            result.append(
+                {
+                    "train_id": row["train_id"],
+                    "route_id": row["route_id"],
+                    "trip_id": row["trip_id"],
+                    "observation_count": len(arrivals),
+                    "arrivals": arrivals,
+                }
+            )
+        return result
 
 
 async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
@@ -1025,30 +996,18 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
         cursor = await db.execute(
             """
             SELECT
-                o.train_id,
-                o.route_id,
-                o.trip_id,
-                o.location_stop_id,
-                o.location_status,
-                o.trip_arrival_delay,
-                o.trip_departure_delay,
-                o.last_position_update,
-                o.next_stop_arrival_time,
-                o.next_stop_departure_time,
-                o.shape_id,
-                o.direction,
-                o.current_stop_sequence,
-                o.collected_at
-            FROM observations o
-            INNER JOIN (
-                SELECT train_id, MAX(id) AS max_id
-                FROM observations
-                WHERE collected_at >= ?
-                  AND location_stop_id IS NOT NULL
-                  AND location_stop_id != ''
-                GROUP BY train_id
-            ) latest ON o.id = latest.max_id
-            ORDER BY o.train_id
+                train_id, route_id, trip_id, location_stop_id, location_status,
+                trip_arrival_delay, trip_departure_delay, last_position_update,
+                next_stop_arrival_time, next_stop_departure_time,
+                shape_id, direction, current_stop_sequence, collected_at,
+                departed_from_stop_id, dwell_since,
+                day_on_time_rate, day_on_time_samples, day_tracking_minutes,
+                consistent_day
+            FROM train_state
+            WHERE collected_at >= ?
+              AND location_stop_id IS NOT NULL
+              AND location_stop_id != ''
+            ORDER BY train_id
             """,
             (cutoff,),
         )
@@ -1082,8 +1041,7 @@ async def get_cached_train_locations() -> list[dict]:
 
 async def get_map_enrichment(
     train_ids: list[str],
-    locations: list[dict],
-) -> tuple[dict[str, int], dict[str, dict[str, str]], dict[str, str]]:
+) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
     global _map_enrichment_cache, _map_enrichment_cache_at
 
     now = time.monotonic()
@@ -1093,7 +1051,7 @@ async def get_map_enrichment(
         and now - _map_enrichment_cache_at < MAP_ENRICHMENT_CACHE_SECONDS
     ):
         cached = _map_enrichment_cache
-        return cached["consist_ids"], cached["old_friends"], cached["dwell_since"]
+        return cached["consist_ids"], cached["old_friends"]
 
     async with _map_enrichment_refresh_lock:
         now = time.monotonic()
@@ -1103,138 +1061,53 @@ async def get_map_enrichment(
             and now - _map_enrichment_cache_at < MAP_ENRICHMENT_CACHE_SECONDS
         ):
             cached = _map_enrichment_cache
-            return cached["consist_ids"], cached["old_friends"], cached["dwell_since"]
+            return cached["consist_ids"], cached["old_friends"]
 
         consist_ids = await get_feelings_consist_ids(train_ids)
         old_friends = await get_active_old_friends(train_ids)
-        dwell_since = await get_station_dwell_since(locations)
         _map_enrichment_cache = {
             "consist_ids": consist_ids,
             "old_friends": old_friends,
-            "dwell_since": dwell_since,
         }
         _map_enrichment_cache_at = now
-        return consist_ids, old_friends, dwell_since
+        return consist_ids, old_friends
 
 
-async def _ensure_obs_train_day_index(db: aiosqlite.Connection) -> None:
-    cursor = await db.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_obs_train_day'"
-    )
-    if await cursor.fetchone():
-        return
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_obs_train_day ON observations(train_id, collected_at)"
-    )
-    await db.commit()
+def punctuality_from_train_state(train: dict) -> dict:
+    return {
+        "consistent_day": bool(train.get("consistent_day")),
+        "day_on_time_rate": train.get("day_on_time_rate"),
+        "day_on_time_samples": int(train.get("day_on_time_samples") or 0),
+        "day_tracking_minutes": float(train.get("day_tracking_minutes") or 0.0),
+    }
 
 
-async def get_train_day_punctuality(
-    train_ids: list[str],
-    *,
-    lightweight: bool = True,
-) -> dict[str, dict]:
-    global _punctuality_cache, _punctuality_cache_at
-
+async def get_train_day_punctuality(train_ids: list[str]) -> dict[str, dict]:
     if not train_ids:
         return {}
 
-    now = time.monotonic()
-    if (
-        _punctuality_cache is not None
-        and _punctuality_cache_at is not None
-        and now - _punctuality_cache_at < PUNCTUALITY_CACHE_SECONDS
-    ):
-        return {
-            train_id: _punctuality_cache.get(train_id, _EMPTY_PUNCTUALITY)
-            for train_id in train_ids
+    placeholders = ",".join("?" * len(train_ids))
+    async with _db_connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT
+                train_id, day_on_time_rate, day_on_time_samples,
+                day_tracking_minutes, consistent_day
+            FROM train_state
+            WHERE train_id IN ({placeholders})
+            """,
+            train_ids,
+        )
+        rows = {
+            row["train_id"]: punctuality_from_train_state(dict(row))
+            for row in await cursor.fetchall()
         }
 
-    async with _punctuality_refresh_lock:
-        now = time.monotonic()
-        if (
-            _punctuality_cache is not None
-            and _punctuality_cache_at is not None
-            and now - _punctuality_cache_at < PUNCTUALITY_CACHE_SECONDS
-        ):
-            return {
-                train_id: _punctuality_cache.get(train_id, _EMPTY_PUNCTUALITY)
-                for train_id in train_ids
-            }
-
-        if lightweight:
-            all_train_ids = train_ids
-            consist_by_train: dict[str, int] = {}
-            members_by_consist: dict[int, list[str]] = {}
-        else:
-            consist_by_train = await get_feelings_consist_ids(train_ids)
-            unique_consist_ids = list(dict.fromkeys(consist_by_train.values()))
-            members_by_consist = await get_train_ids_for_consists(unique_consist_ids)
-            all_train_ids = list(
-                dict.fromkeys(
-                    train_id
-                    for member_ids in members_by_consist.values()
-                    for train_id in member_ids
-                )
-            )
-            if not all_train_ids:
-                all_train_ids = train_ids
-
-        day_start, day_end = today_bounds_utc()
-        placeholders = ",".join("?" * len(all_train_ids))
-        params = [*all_train_ids, _iso(day_start), _iso(day_end)]
-
-        async with _db_connect() as db:
-            await _ensure_obs_train_day_index(db)
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                f"""
-                SELECT
-                    train_id,
-                    MIN(collected_at) AS collected_at,
-                    MAX(trip_arrival_delay) AS trip_arrival_delay,
-                    MAX(trip_departure_delay) AS trip_departure_delay
-                FROM observations
-                WHERE train_id IN ({placeholders})
-                  AND collected_at >= ?
-                  AND collected_at < ?
-                GROUP BY train_id, (cast(strftime('%s', collected_at) as integer) / 300)
-                ORDER BY train_id, collected_at
-                """,
-                params,
-            )
-            rows = [dict(row) for row in await cursor.fetchall()]
-
-        samples_by_train: dict[str, list[dict]] = defaultdict(list)
-        for row in rows:
-            samples_by_train[row["train_id"]].append(row)
-
-        result: dict[str, dict] = {}
-        if lightweight:
-            for train_id in train_ids:
-                result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
-        else:
-            stats_by_consist: dict[int, dict] = {}
-            for consist_id, member_ids in members_by_consist.items():
-                merged: list[dict] = []
-                for member_id in member_ids:
-                    merged.extend(samples_by_train.get(member_id, []))
-                merged.sort(key=lambda sample: sample.get("collected_at") or "")
-                stats_by_consist[consist_id] = summarize_day_punctuality(merged)
-
-            for train_id in train_ids:
-                consist_id = consist_by_train.get(train_id)
-                if consist_id and consist_id in stats_by_consist:
-                    result[train_id] = stats_by_consist[consist_id]
-                else:
-                    result[train_id] = summarize_day_punctuality(samples_by_train.get(train_id, []))
-
-        _punctuality_cache = result
-        _punctuality_cache_at = now
-        return {
-            train_id: result.get(train_id, _EMPTY_PUNCTUALITY)
-            for train_id in train_ids
-        }
+    return {
+        train_id: rows.get(train_id, empty_day_punctuality())
+        for train_id in train_ids
+    }
 
 
 async def get_feed_health() -> list[dict]:
