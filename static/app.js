@@ -11,14 +11,39 @@ if (focusTrainId) {
 }
 
 function formatTime(iso) {
-  if (!iso) return "—";
+  if (!iso) return null;
   const date = new Date(iso);
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
 
 function formatLocationStatus(status) {
-  if (!status) return "";
+  if (!status) return null;
   return status.replaceAll("_", " ").toLowerCase();
+}
+
+function formatDelay(seconds) {
+  if (seconds === null || seconds === undefined) return null;
+  const value = Number(seconds);
+  if (Number.isNaN(value)) return null;
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value}s`;
+}
+
+function formatRate(rate) {
+  if (rate === null || rate === undefined) return null;
+  return `${Math.round(Number(rate) * 100)}%`;
+}
+
+function formatMinutes(value) {
+  if (value === null || value === undefined) return null;
+  return `${Number(value).toFixed(1)} min`;
+}
+
+function dwellSeconds(dwellSince) {
+  if (!dwellSince) return null;
+  const ms = Date.now() - new Date(dwellSince).getTime();
+  if (Number.isNaN(ms) || ms < 0) return null;
+  return `${Math.floor(ms / 1000)}s`;
 }
 
 function escapeHtml(value) {
@@ -30,7 +55,7 @@ function escapeHtml(value) {
 }
 
 function renderField(label, value, kind) {
-  if (!value) return "";
+  if (value === null || value === undefined || value === "") return "";
   return `
     <div class="field field--${kind}">
       <span class="field__label">${escapeHtml(label)}</span>
@@ -44,14 +69,6 @@ function renderHistoryItem(item) {
     renderField("Predicted departure", formatTime(item.departure_time), "predicted"),
     renderField("Scheduled track", item.scheduled_track ? `Track ${item.scheduled_track}` : null, "scheduled"),
     renderField("Actual track", item.actual_track ? `Track ${item.actual_track}` : null, "actual"),
-    renderField(
-      "Train location",
-      item.location_stop_id
-        ? `${item.location_stop_id} (${formatLocationStatus(item.location_status)})`
-        : null,
-      "actual"
-    ),
-    renderField("Polled at", formatTime(item.collected_at), "meta"),
   ].join("");
 
   return `
@@ -65,16 +82,45 @@ function renderHistoryItem(item) {
 }
 
 function renderTrainCard(train) {
-  const history = (train.arrivals || []).slice(0, HISTORY_LIMIT);
+  const upcoming = (train.upcoming_stops || train.arrivals || []).slice(0, HISTORY_LIMIT);
   const isOpen = expandedTrains.has(train.train_id);
   const openAttr = isOpen ? " open" : "";
-  const summary = history.length
-    ? `${history.length} upcoming stop${history.length === 1 ? "" : "s"}`
+  const summary = upcoming.length
+    ? `${upcoming.length} upcoming stop${upcoming.length === 1 ? "" : "s"}`
     : "No upcoming stops";
 
-  const historyHtml = history.length
-    ? history.map(renderHistoryItem).join("")
-    : '<li class="history-item history-item--empty">No stop updates in the current poll.</li>';
+  const historyHtml = upcoming.length
+    ? upcoming.map(renderHistoryItem).join("")
+    : '<li class="history-item history-item--empty">No upcoming stops in the current poll.</li>';
+
+  const locationLabel = train.location_stop_id
+    ? `${train.location_stop_id}${
+        train.location_status ? ` (${formatLocationStatus(train.location_status)})` : ""
+      }`
+    : null;
+
+  const stateFields = [
+    renderField("Location", locationLabel, "actual"),
+    renderField("Direction", train.direction, "actual"),
+    renderField("Shape", train.shape_id, "meta"),
+    renderField("Stop sequence", train.current_stop_sequence, "meta"),
+    renderField("Arrival delay", formatDelay(train.trip_arrival_delay), "predicted"),
+    renderField("Departure delay", formatDelay(train.trip_departure_delay), "predicted"),
+    renderField("Next arrival", formatTime(train.next_stop_arrival_time), "predicted"),
+    renderField("Next departure", formatTime(train.next_stop_departure_time), "predicted"),
+    renderField("Last position update", formatTime(train.last_position_update), "actual"),
+    renderField("Last stopped at", train.last_stopped_at, "actual"),
+    renderField("Departed from", train.departed_from_stop_id, "actual"),
+    renderField("Dwelling since", formatTime(train.dwell_since), "actual"),
+    renderField("Dwell so far", dwellSeconds(train.dwell_since), "actual"),
+    renderField("On-time today", formatRate(train.day_on_time_rate), "scheduled"),
+    renderField("Punctuality samples", train.day_on_time_samples, "scheduled"),
+    renderField("Tracking today", formatMinutes(train.day_tracking_minutes), "scheduled"),
+    renderField("Consistent day", train.consistent_day ? "yes" : null, "scheduled"),
+    renderField("Feed", train.feed_id, "meta"),
+    renderField("Feed timestamp", formatTime(train.feed_timestamp), "meta"),
+    renderField("Polled at", formatTime(train.collected_at), "meta"),
+  ].join("");
 
   return `
     <article class="train-card" data-train-id="${escapeHtml(train.train_id)}">
@@ -92,6 +138,7 @@ function renderTrainCard(train) {
             </div>
           </div>
         </div>
+        <div class="train-card__state">${stateFields}</div>
       </div>
       <details class="train-history"${openAttr} data-train-id="${escapeHtml(train.train_id)}">
         <summary class="train-history__summary">${escapeHtml(summary)}</summary>

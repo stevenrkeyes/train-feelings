@@ -124,6 +124,13 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.train-card__state {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.55rem 0.9rem;
+  margin-top: 0.85rem;
+}
+
 .train-card__top {
   display: flex;
   align-items: flex-start;

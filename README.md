@@ -61,7 +61,7 @@ Point `trains.oscilloscopi.st` (or your subdomain) at the Fly app via DNS.
 | `GET /` | Map (sets session cookie) |
 | `GET /trains` | Train list UI |
 | `GET /api/map/trains` | Current train locations for map |
-| `GET /api/trains` | Trains + arrivals from last 10 minutes |
+| `GET /api/trains` | Current train state |
 | `GET /api/feeds` | Feed health status |
 | `GET /api/health` | Liveness check (no session) |
 

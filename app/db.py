@@ -950,40 +950,43 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
         cursor = await db.execute(
             """
             SELECT
-                train_id, route_id, trip_id, location_stop_id, location_status,
-                collected_at, upcoming_stops_json
+                train_id, trip_id, route_id, direction, shape_id,
+                location_stop_id, location_status, current_stop_sequence,
+                trip_arrival_delay, trip_departure_delay,
+                last_position_update, next_stop_arrival_time, next_stop_departure_time,
+                feed_id, feed_timestamp, collected_at,
+                last_stopped_at, departed_from_stop_id, dwell_since,
+                day_on_time_rate, day_on_time_samples, day_tracking_minutes,
+                consistent_day, upcoming_stops_json
             FROM train_state
             WHERE collected_at >= ?
               AND location_stop_id IS NOT NULL
               AND location_stop_id != ''
-            ORDER BY train_id
+            ORDER BY route_id, train_id
             """,
             (cutoff,),
         )
         result = []
         for row in await cursor.fetchall():
+            train = dict(row)
             try:
-                upcoming = json.loads(row["upcoming_stops_json"] or "[]")
+                upcoming = json.loads(train.pop("upcoming_stops_json") or "[]")
             except json.JSONDecodeError:
                 upcoming = []
-            arrivals = [
+            train["consistent_day"] = bool(train.get("consistent_day"))
+            train["upcoming_stops"] = upcoming[:HISTORY_LIMIT]
+            train["observation_count"] = len(train["upcoming_stops"])
+            # Keep legacy key used by older clients / remote proxy shape.
+            train["arrivals"] = [
                 {
                     **stop,
-                    "location_stop_id": row["location_stop_id"],
-                    "location_status": row["location_status"],
-                    "collected_at": row["collected_at"],
+                    "location_stop_id": train["location_stop_id"],
+                    "location_status": train["location_status"],
+                    "collected_at": train["collected_at"],
                 }
-                for stop in upcoming[:HISTORY_LIMIT]
+                for stop in train["upcoming_stops"]
             ]
-            result.append(
-                {
-                    "train_id": row["train_id"],
-                    "route_id": row["route_id"],
-                    "trip_id": row["trip_id"],
-                    "observation_count": len(arrivals),
-                    "arrivals": arrivals,
-                }
-            )
+            result.append(train)
         return result
 
 
