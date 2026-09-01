@@ -717,8 +717,9 @@ async def update_colocations_from_poll(rows: list[dict], collected_at: str) -> N
     train_ids = list({row["train_id"] for row in rows})
     consist_by_train = await get_feelings_consist_ids(train_ids) if train_ids else {}
 
+    route_by_train = {row["train_id"]: row.get("route_id") for row in rows}
     by_stop = trains_at_station_by_consist(rows, consist_by_train)
-    active_pairs = colocation_pairs(by_stop)
+    active_pairs = colocation_pairs(by_stop, route_by_train)
     active_keys = {(consist_a, consist_b, stop_id) for stop_id, consist_a, consist_b, _, _ in active_pairs}
 
     async with _db_write() as db:

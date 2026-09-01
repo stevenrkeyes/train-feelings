@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from app.config import OLD_FRIEND_DURATION_MINUTES, OLD_FRIEND_MIN_GAP_MINUTES
+from app.line_families import qualifies_as_old_friend
 from app.stops import colocation_site_id
 
 AT_STATION_STATUSES = frozenset({"STOPPED_AT"})
@@ -49,6 +50,7 @@ def trains_at_station_by_consist(
 
 def colocation_pairs(
     by_stop: dict[str, dict[int, str]],
+    route_by_train: dict[str, str | None],
 ) -> list[tuple[str, int, int, str, str]]:
     """Return (stop_id, consist_a, consist_b, train_a_id, train_b_id) for each active pair."""
     pairs: list[tuple[str, int, int, str, str]] = []
@@ -60,6 +62,12 @@ def colocation_pairs(
 
         for index, (consist_a, train_a) in enumerate(consist_items):
             for consist_b, train_b in consist_items[index + 1 :]:
+                if not qualifies_as_old_friend(
+                    route_by_train.get(train_a),
+                    route_by_train.get(train_b),
+                ):
+                    continue
+
                 pair = canonical_consist_pair(consist_a, consist_b)
                 if pair[0] == consist_a:
                     pairs.append((stop_id, pair[0], pair[1], train_a, train_b))
