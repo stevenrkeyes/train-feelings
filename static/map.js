@@ -262,7 +262,12 @@ function emojiStatusHtml(train) {
 function hideEmojiNotice(trainId) {
   const notice = emojiNoticeByTrainId.get(trainId);
   if (!notice) return;
-  clearTimeout(notice.timeoutId);
+  if (notice.revealTimeoutId) {
+    clearTimeout(notice.revealTimeoutId);
+  }
+  if (notice.timeoutId) {
+    clearTimeout(notice.timeoutId);
+  }
   const marker = markersByTrainId.get(trainId);
   if (marker?.getTooltip()) {
     marker.unbindTooltip();
@@ -282,9 +287,9 @@ function showEmojiNotice(trainId, train) {
 
   let notice = emojiNoticeByTrainId.get(trainId);
   if (!notice) {
-    notice = { timeoutId: null };
+    notice = { timeoutId: null, revealTimeoutId: null };
     emojiNoticeByTrainId.set(trainId, notice);
-  } else {
+  } else if (notice.timeoutId) {
     clearTimeout(notice.timeoutId);
   }
 
@@ -304,6 +309,40 @@ function showEmojiNotice(trainId, train) {
   }
 
   notice.timeoutId = setTimeout(() => hideEmojiNotice(trainId), EMOJI_NOTICE_MS);
+}
+
+function shuffleInPlace(items) {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [items[index], items[swapIndex]] = [items[swapIndex], items[index]];
+  }
+  return items;
+}
+
+function scheduleEmojiNotices(changes) {
+  const count = changes.length;
+  if (count === 0) {
+    return;
+  }
+
+  const intervalMs = REFRESH_MS / count;
+  shuffleInPlace(changes).forEach(({ trainId }, index) => {
+    hideEmojiNotice(trainId);
+
+    let notice = emojiNoticeByTrainId.get(trainId);
+    if (!notice) {
+      notice = { timeoutId: null, revealTimeoutId: null };
+      emojiNoticeByTrainId.set(trainId, notice);
+    }
+
+    notice.revealTimeoutId = setTimeout(() => {
+      notice.revealTimeoutId = null;
+      const train = trainStateById.get(trainId);
+      if (train) {
+        showEmojiNotice(trainId, train);
+      }
+    }, index * intervalMs);
+  });
 }
 
 function syncMarkers(trains) {
@@ -326,6 +365,8 @@ function syncMarkers(trains) {
 
   recomputeStationJogOffsets();
 
+  const emojiChanges = [];
+
   for (const train of trains) {
     const latLng = markerDisplayLatLng(train);
     let marker = markersByTrainId.get(train.train_id);
@@ -342,7 +383,7 @@ function syncMarkers(trains) {
     const newEmoji = trainEmoji(train);
     const prevEmoji = lastEmojiByTrainId.get(train.train_id);
     if (prevEmoji !== undefined && prevEmoji !== newEmoji) {
-      showEmojiNotice(train.train_id, train);
+      emojiChanges.push({ trainId: train.train_id, train });
     }
     lastEmojiByTrainId.set(train.train_id, newEmoji);
 
@@ -351,6 +392,8 @@ function syncMarkers(trains) {
       { closeButton: true, autoClose: true, closeOnClick: true }
     );
   }
+
+  scheduleEmojiNotices(emojiChanges);
 
   lastTrainCount = trains.length;
 }
