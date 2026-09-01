@@ -77,11 +77,11 @@ function zoomIconScale() {
 }
 
 function trainEmoji(train) {
-  if (train.saw_old_friend) {
-    return "😀";
-  }
   if (train.snoozing_at_station) {
     return "😴";
+  }
+  if (train.saw_old_friend) {
+    return "😀";
   }
   if (train.groggy) {
     return "🫩";
@@ -102,11 +102,11 @@ function trainEmoji(train) {
 }
 
 function trainIconLabel(train) {
-  if (train.saw_old_friend) {
-    return "saw an old friend";
-  }
   if (train.snoozing_at_station) {
     return "snoozing at the station";
+  }
+  if (train.saw_old_friend) {
+    return "saw an old friend";
   }
   if (train.groggy) {
     return "groggy train";
@@ -461,14 +461,14 @@ function isSpecialTrainLabel(label) {
 }
 
 function scheduleStatusLine(train, maxDelay, minDelay) {
+  if (train.snoozing_at_station && train.station_dwell_minutes != null) {
+    return `<div class="train-popup__snoozing">Snoozing (${train.station_dwell_minutes} min)</div>`;
+  }
   if (train.saw_old_friend) {
     if (isSpecialTrainLabel(train.old_friend_train_label)) {
       return `<div class="train-popup__old-friend">Saw an old friend.</div>`;
     }
     return `<div class="train-popup__old-friend">Saw an old friend (${escapeHtml(train.old_friend_train_label)})</div>`;
-  }
-  if (train.snoozing_at_station && train.station_dwell_minutes != null) {
-    return `<div class="train-popup__snoozing">Snoozing (${train.station_dwell_minutes} min)</div>`;
   }
   if (train.groggy) {
     return `<div class="train-popup__groggy">Groggy</div>`;
