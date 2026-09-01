@@ -12,6 +12,54 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GTFS_ZIP = ROOT / "data" / "gtfs" / "google_transit.zip"
 OUTPUT = ROOT / "static" / "subway-shapes.geojson"
+# ~15 m tolerance — enough detail for the map, far fewer points than raw GTFS shapes.
+SIMPLIFY_TOLERANCE = 0.00015
+
+
+def _perpendicular_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    x0, y0 = point
+    x1, y1 = start
+    x2, y2 = end
+    dx = x2 - x1
+    dy = y2 - y1
+    if dx == 0 and dy == 0:
+        return ((x0 - x1) ** 2 + (y0 - y1) ** 2) ** 0.5
+    t = max(0.0, min(1.0, ((x0 - x1) * dx + (y0 - y1) * dy) / (dx * dx + dy * dy)))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return ((x0 - proj_x) ** 2 + (y0 - proj_y) ** 2) ** 0.5
+
+
+def _simplify_line(
+    coordinates: list[list[float]],
+    tolerance: float,
+) -> list[list[float]]:
+    if len(coordinates) <= 2:
+        return coordinates
+
+    start = coordinates[0]
+    end = coordinates[-1]
+    max_distance = 0.0
+    index = 0
+    for i in range(1, len(coordinates) - 1):
+        distance = _perpendicular_distance(
+            (coordinates[i][0], coordinates[i][1]),
+            (start[0], start[1]),
+            (end[0], end[1]),
+        )
+        if distance > max_distance:
+            max_distance = distance
+            index = i
+
+    if max_distance > tolerance:
+        left = _simplify_line(coordinates[: index + 1], tolerance)
+        right = _simplify_line(coordinates[index:], tolerance)
+        return left[:-1] + right
+    return [start, end]
 
 
 def _read_csv(zip_file: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
@@ -57,7 +105,10 @@ def build() -> None:
 
         color = route.get("route_color", "808183").strip() or "808183"
         points.sort(key=lambda item: item[0])
-        coordinates = [[lon, lat] for _, lat, lon in points]
+        coordinates = _simplify_line(
+            [[lon, lat] for _, lat, lon in points],
+            SIMPLIFY_TOLERANCE,
+        )
         if len(coordinates) < 2:
             continue
 
