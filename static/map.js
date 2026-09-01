@@ -444,8 +444,15 @@ function trainPopupHtml(train) {
   return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${scheduleLine}</div>`;
 }
 
+function isSpecialTrainLabel(label) {
+  return !label || label === "Special Train";
+}
+
 function scheduleStatusLine(train, maxDelay, minDelay) {
-  if (train.saw_old_friend && train.old_friend_train_label) {
+  if (train.saw_old_friend) {
+    if (isSpecialTrainLabel(train.old_friend_train_label)) {
+      return `<div class="train-popup__old-friend">Saw an old friend.</div>`;
+    }
     return `<div class="train-popup__old-friend">Saw an old friend (${escapeHtml(train.old_friend_train_label)})</div>`;
   }
   if (train.snoozing_at_station && train.station_dwell_minutes != null) {
