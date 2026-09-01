@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.collector import collector_loop
 from app.config import (
     ARRIVAL_WINDOW_MINUTES,
+    CARTO_API_KEY,
     COLLECTOR_ENABLED,
     DATA_SOURCE,
     INTERNAL_API_TOKEN,
@@ -219,7 +221,13 @@ async def map_page():
     page_path = STATIC_DIR / "index.html"
     if not page_path.exists():
         return JSONResponse({"message": "Map not found"}, status_code=404)
-    return FileResponse(page_path)
+
+    html = page_path.read_text(encoding="utf-8")
+    config_script = (
+        f"<script>window.CARTO_API_KEY = {json.dumps(CARTO_API_KEY)};</script>\n  "
+    )
+    html = html.replace('<script src="/static/map.js"></script>', f"{config_script}<script src=\"/static/map.js\"></script>")
+    return HTMLResponse(html)
 
 
 @app.get(TRAINS_PAGE_PATH)
