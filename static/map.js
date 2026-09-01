@@ -431,11 +431,17 @@ function trainPopupHtml(train) {
 
   const stationLine = `<div class="train-popup__station">${escapeHtml(stationStatusLine(train))}</div>`;
 
-  let departureLine = "";
+  let timingLine = "";
   if (train.location_status === "STOPPED_AT" && train.next_stop_departure_time) {
     const departTime = formatTime(train.next_stop_departure_time);
     if (departTime) {
-      departureLine = `<div class="train-popup__departure">Expected departure: ${escapeHtml(departTime)}</div>`;
+      timingLine = `<div class="train-popup__departure">Expected departure: ${escapeHtml(departTime)}</div>`;
+    }
+  } else if (train.location_status === "IN_TRANSIT_TO") {
+    const arrivalIso = train.next_stop_arrival_time || train.next_stop_departure_time;
+    const arrivalTime = formatTime(arrivalIso);
+    if (arrivalTime) {
+      timingLine = `<div class="train-popup__departure">Expected arrival: ${escapeHtml(arrivalTime)}</div>`;
     }
   }
 
@@ -447,7 +453,7 @@ function trainPopupHtml(train) {
   const title = train.train_label || "Special Train";
   const scheduleLine = scheduleStatusLine(train, maxDelay, minDelay);
 
-  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${departureLine}${modeLine}${scheduleLine}</div>`;
+  return `<div class="train-popup"><div class="train-popup__title"><a class="train-popup__link" href="${trainPageUrl(train.train_id)}">${escapeHtml(title)}</a></div>${stationLine}${timingLine}${modeLine}${scheduleLine}</div>`;
 }
 
 function isSpecialTrainLabel(label) {
