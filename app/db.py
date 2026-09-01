@@ -37,7 +37,7 @@ from app.old_friends import (
     should_trigger_reunion,
     trains_at_station_by_consist,
 )
-from app.snoozing import AT_STATION_STATUSES
+from app.snoozing import AT_STATION_STATUSES, groggy_until_iso, is_groggy, is_snoozing_at_station
 
 _db_lock = asyncio.Lock()
 
@@ -109,6 +109,7 @@ async def init_db(db_path: Path | None = None) -> None:
                 last_stopped_at TEXT,
                 departed_from_stop_id TEXT,
                 dwell_since TEXT,
+                groggy_until TEXT,
                 day_bucket_date TEXT,
                 day_first_seen_at TEXT,
                 last_punctuality_bucket INTEGER,
@@ -139,8 +140,17 @@ async def init_db(db_path: Path | None = None) -> None:
             """
         )
         await db.commit()
+        await _ensure_train_state_columns(db)
         await _init_consist_tables(db)
         await _init_old_friend_tables(db)
+
+
+async def _ensure_train_state_columns(db: aiosqlite.Connection) -> None:
+    cursor = await db.execute("PRAGMA table_info(train_state)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "groggy_until" not in columns:
+        await db.execute("ALTER TABLE train_state ADD COLUMN groggy_until TEXT")
+        await db.commit()
 
 
 async def _init_consist_tables(db: aiosqlite.Connection) -> None:
@@ -270,6 +280,8 @@ def _derive_train_state(existing: dict | None, snapshot: dict, collected_at: str
     last_stopped_at = existing.get("last_stopped_at") if existing else None
     departed_from_stop_id = existing.get("departed_from_stop_id") if existing else None
     dwell_since = existing.get("dwell_since") if existing else None
+    previous_dwell_since = dwell_since
+    groggy_until = existing.get("groggy_until") if existing else None
 
     if status == "STOPPED_AT" and stop_id:
         last_stopped_at = stop_id
@@ -298,6 +310,13 @@ def _derive_train_state(existing: dict | None, snapshot: dict, collected_at: str
         dwell_since = None
 
     collected_dt = _parse_iso(collected_at) or _utc_now()
+    was_snoozing = is_snoozing_at_station(previous_dwell_since, collected_dt)
+    now_snoozing = is_snoozing_at_station(dwell_since, collected_dt) if dwell_since else False
+    if was_snoozing and not now_snoozing:
+        groggy_until = groggy_until_iso(collected_at, collected_dt)
+    elif groggy_until and not is_groggy(groggy_until, collected_dt):
+        groggy_until = None
+
     today = ny_calendar_date(collected_dt)
     bucket = punctuality_bucket(collected_dt)
 
@@ -353,6 +372,7 @@ def _derive_train_state(existing: dict | None, snapshot: dict, collected_at: str
         "last_stopped_at": last_stopped_at,
         "departed_from_stop_id": departed_from_stop_id,
         "dwell_since": dwell_since,
+        "groggy_until": groggy_until,
         "day_bucket_date": day_bucket_date,
         "day_first_seen_at": day_first_seen_at,
         "last_punctuality_bucket": last_bucket,
@@ -416,6 +436,7 @@ async def upsert_train_states(
                     derived["last_stopped_at"],
                     derived["departed_from_stop_id"],
                     derived["dwell_since"],
+                    derived["groggy_until"],
                     derived["day_bucket_date"],
                     derived["day_first_seen_at"],
                     derived["last_punctuality_bucket"],
@@ -436,11 +457,11 @@ async def upsert_train_states(
                 trip_arrival_delay, trip_departure_delay, last_position_update,
                 next_stop_arrival_time, next_stop_departure_time,
                 feed_id, feed_timestamp, collected_at,
-                last_stopped_at, departed_from_stop_id, dwell_since,
+                last_stopped_at, departed_from_stop_id, dwell_since, groggy_until,
                 day_bucket_date, day_first_seen_at, last_punctuality_bucket,
                 day_on_time_samples, day_good_samples, day_on_time_rate,
                 day_tracking_minutes, consistent_day, upcoming_stops_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(train_id) DO UPDATE SET
                 trip_id = excluded.trip_id,
                 route_id = excluded.route_id,
@@ -460,6 +481,7 @@ async def upsert_train_states(
                 last_stopped_at = excluded.last_stopped_at,
                 departed_from_stop_id = excluded.departed_from_stop_id,
                 dwell_since = excluded.dwell_since,
+                groggy_until = excluded.groggy_until,
                 day_bucket_date = excluded.day_bucket_date,
                 day_first_seen_at = excluded.day_first_seen_at,
                 last_punctuality_bucket = excluded.last_punctuality_bucket,
@@ -955,7 +977,7 @@ async def get_trains_with_arrivals(window_minutes: int | None = None) -> list[di
                 trip_arrival_delay, trip_departure_delay,
                 last_position_update, next_stop_arrival_time, next_stop_departure_time,
                 feed_id, feed_timestamp, collected_at,
-                last_stopped_at, departed_from_stop_id, dwell_since,
+                last_stopped_at, departed_from_stop_id, dwell_since, groggy_until,
                 day_on_time_rate, day_on_time_samples, day_tracking_minutes,
                 consistent_day, upcoming_stops_json
             FROM train_state
@@ -1003,7 +1025,7 @@ async def get_train_locations(window_minutes: int | None = None) -> list[dict]:
                 trip_arrival_delay, trip_departure_delay, last_position_update,
                 next_stop_arrival_time, next_stop_departure_time,
                 shape_id, direction, current_stop_sequence, collected_at,
-                departed_from_stop_id, dwell_since,
+                departed_from_stop_id, dwell_since, groggy_until,
                 day_on_time_rate, day_on_time_samples, day_tracking_minutes,
                 consistent_day
             FROM train_state

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.config import SNORING_STATION_MINUTES
+from app.config import GROGGY_DURATION_MINUTES, SNORING_STATION_MINUTES
 
 AT_STATION_STATUSES = frozenset({"STOPPED_AT", "INCOMING_AT"})
 
@@ -31,6 +31,19 @@ def is_snoozing_at_station(dwell_since: str | None, now: datetime | None = None)
     return minutes >= SNORING_STATION_MINUTES
 
 
+def is_groggy(groggy_until: str | None, now: datetime | None = None) -> bool:
+    if not groggy_until:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return _parse_iso(groggy_until) > now
+
+
+def groggy_until_iso(collected_at: str, now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    start = _parse_iso(collected_at) if collected_at else now
+    return (start + timedelta(minutes=GROGGY_DURATION_MINUTES)).isoformat()
+
+
 def apply_snoozing(
     trains: list[dict],
     dwell_since_by_train_id: dict[str, str] | None = None,
@@ -52,4 +65,24 @@ def apply_snoozing(
                 "station_dwell_minutes": minutes,
             }
         )
+    return enriched
+
+
+def apply_groggy(
+    trains: list[dict],
+    groggy_until_by_train_id: dict[str, str] | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    groggy_until_by_train = groggy_until_by_train_id or {}
+    now = now or datetime.now(timezone.utc)
+    enriched: list[dict] = []
+    for train in trains:
+        if train.get("snoozing_at_station"):
+            enriched.append(train)
+            continue
+        until = groggy_until_by_train.get(train["train_id"])
+        if not is_groggy(until, now):
+            enriched.append(train)
+            continue
+        enriched.append({**train, "groggy": True})
     return enriched

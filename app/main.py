@@ -174,6 +174,11 @@ async def map_trains(request: Request):
         for train in locations
         if train.get("dwell_since")
     }
+    groggy_until = {
+        train["train_id"]: train["groggy_until"]
+        for train in locations
+        if train.get("groggy_until")
+    }
     t_enrichment = time.monotonic()
 
     trains = enrich_map_trains(
@@ -183,6 +188,7 @@ async def map_trains(request: Request):
         consist_ids,
         old_friends,
         dwell_since,
+        groggy_until,
     )
     elapsed = time.monotonic() - started
     if elapsed > 5:
