@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from app.config import OLD_FRIEND_DURATION_MINUTES, OLD_FRIEND_MIN_GAP_MINUTES
+from app.stops import colocation_site_id
 
 AT_STATION_STATUSES = frozenset({"STOPPED_AT"})
 
@@ -23,7 +24,7 @@ def trains_at_station_by_consist(
     rows: list[dict],
     consist_by_train: dict[str, int],
 ) -> dict[str, dict[int, str]]:
-    """Map stop_id -> {feelings_consist_id: train_id} for trains stopped at a station."""
+    """Map colocation site id -> {feelings_consist_id: train_id} for trains stopped at a station."""
     by_stop: dict[str, dict[int, str]] = defaultdict(dict)
     seen_trains: set[str] = set()
 
@@ -36,7 +37,7 @@ def trains_at_station_by_consist(
         if row.get("location_status") not in AT_STATION_STATUSES:
             continue
 
-        stop_id = row.get("location_stop_id")
+        stop_id = colocation_site_id(row.get("location_stop_id"))
         consist_id = consist_by_train.get(train_id)
         if not stop_id or consist_id is None:
             continue
